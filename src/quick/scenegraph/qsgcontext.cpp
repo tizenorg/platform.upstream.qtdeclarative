@@ -449,7 +449,7 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
     m_gl->setProperty(QSG_RENDERCONTEXT_PROPERTY, QVariant::fromValue(this));
     m_sg->renderContextInitialized(this);
 
-#ifdef Q_OS_LINUX
+#if defined(Q_OS_LINUX) && !defined(Q_OS_LINUX_TIZEN_SIMULATOR)
     const char *vendor = (const char *) glGetString(GL_VENDOR);
     if (strstr(vendor, "nouveau"))
         m_brokenIBOs = true;
@@ -458,6 +458,10 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
         m_serializedRender = true;
     if (strstr(vendor, "Hisilicon Technologies") && strstr(renderer, "Immersion.16"))
         m_brokenIBOs = true;
+#endif
+
+#ifdef Q_OS_LINUX_TIZEN_SIMULATOR
+    m_brokenIBOs = true;
 #endif
 
     emit initialized();
