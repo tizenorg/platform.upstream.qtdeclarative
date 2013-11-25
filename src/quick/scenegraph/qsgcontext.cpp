@@ -464,6 +464,10 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
     m_brokenIBOs = true;
 #endif
 
+#ifdef Q_OS_LINUX_TIZEN_SIMULATOR
+    m_brokenIBOs = true;
+#endif
+
     emit initialized();
 }
 
