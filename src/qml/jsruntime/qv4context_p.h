@@ -66,8 +66,21 @@ struct CallContext;
 struct CatchContext;
 struct WithContext;
 
-struct Q_QML_EXPORT ExecutionContext
+struct Q_QML_EXPORT ExecutionContext : public Managed
 {
+    Q_MANAGED
+    ExecutionContext()
+        : Managed(0) {
+        vtbl = &static_vtbl;
+    }
+    void init() {
+        _data = 0;
+        internalClass = 0;
+        inUse = 1;
+        extensible = 1;
+        vtbl = &static_vtbl;
+    }
+
     enum Type {
         Type_GlobalContext = 0x1,
         Type_CatchContext = 0x2,
@@ -79,7 +92,6 @@ struct Q_QML_EXPORT ExecutionContext
 
     Type type;
     bool strictMode;
-    bool marked;
 
     CallData *callData;
 
@@ -98,13 +110,12 @@ struct Q_QML_EXPORT ExecutionContext
     EvalCode *currentEvalCode;
 
     const uchar **interpreterInstructionPointer;
-    char *jitInstructionPointer;
+    int lineNumber;
 
     void initBaseContext(Type type, ExecutionEngine *engine, ExecutionContext *parentContext)
     {
         this->type = type;
         strictMode = false;
-        marked = false;
         this->engine = engine;
         parent = parentContext;
         outer = 0;
@@ -112,7 +123,7 @@ struct Q_QML_EXPORT ExecutionContext
         compilationUnit = 0;
         currentEvalCode = 0;
         interpreterInstructionPointer = 0;
-        jitInstructionPointer = 0;
+        lineNumber = -1;
     }
 
     CallContext *newCallContext(FunctionObject *f, CallData *callData);
@@ -130,12 +141,13 @@ struct Q_QML_EXPORT ExecutionContext
     ReturnedValue throwError(const QV4::ValueRef value);
     ReturnedValue throwError(const QString &message);
     ReturnedValue throwSyntaxError(const QString &message);
-    ReturnedValue throwSyntaxError(const QString &message, const QString &fileName, int line, int column);
+    ReturnedValue throwSyntaxError(const QString &message, const QString &fileName, int lineNumber, int column);
     ReturnedValue throwTypeError();
     ReturnedValue throwTypeError(const QString &message);
     ReturnedValue throwReferenceError(const ValueRef value);
-    ReturnedValue throwReferenceError(const QString &value, const QString &fileName, int line, int column);
+    ReturnedValue throwReferenceError(const QString &value, const QString &fileName, int lineNumber, int column);
     ReturnedValue throwRangeError(const ValueRef value);
+    ReturnedValue throwRangeError(const QString &message);
     ReturnedValue throwURIError(const ValueRef msg);
     ReturnedValue throwUnimplemented(const QString &message);
 
@@ -147,10 +159,10 @@ struct Q_QML_EXPORT ExecutionContext
     // Can only be called from within catch(...), rethrows if no JS exception.
     ReturnedValue catchException(StackTrace *trace = 0);
 
-    void mark();
-
     inline CallContext *asCallContext();
     inline const CallContext *asCallContext() const;
+
+    static void markObjects(Managed *m, ExecutionEngine *e);
 };
 
 struct CallContext : public ExecutionContext

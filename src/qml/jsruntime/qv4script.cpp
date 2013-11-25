@@ -62,11 +62,18 @@ using namespace QV4;
 QmlBindingWrapper::QmlBindingWrapper(ExecutionContext *scope, Function *f, ObjectRef qml)
     : FunctionObject(scope, scope->engine->id_eval)
     , qml(qml)
+    , qmlContext(0)
 {
+    Q_ASSERT(scope->inUse);
+
     vtbl = &static_vtbl;
     function = f;
     function->compilationUnit->ref();
     needsActivation = function->needsActivation();
+
+    Scope s(scope);
+    ScopedValue protectThis(s, this);
+
     defineReadonlyProperty(scope->engine->id_length, Primitive::fromInt32(1));
 
     qmlContext = scope->engine->current->newQmlContext(this, qml);
@@ -76,10 +83,17 @@ QmlBindingWrapper::QmlBindingWrapper(ExecutionContext *scope, Function *f, Objec
 QmlBindingWrapper::QmlBindingWrapper(ExecutionContext *scope, ObjectRef qml)
     : FunctionObject(scope, scope->engine->id_eval)
     , qml(qml)
+    , qmlContext(0)
 {
+    Q_ASSERT(scope->inUse);
+
     vtbl = &static_vtbl;
     function = 0;
     needsActivation = false;
+
+    Scope s(scope);
+    ScopedValue protectThis(s, this);
+
     defineReadonlyProperty(scope->engine->id_length, Primitive::fromInt32(1));
 
     qmlContext = scope->engine->current->newQmlContext(this, qml);
@@ -89,6 +103,8 @@ QmlBindingWrapper::QmlBindingWrapper(ExecutionContext *scope, ObjectRef qml)
 ReturnedValue QmlBindingWrapper::call(Managed *that, CallData *)
 {
     ExecutionEngine *engine = that->engine();
+    CHECK_STACK_LIMITS(engine);
+
     Scope scope(engine);
     QmlBindingWrapper *This = static_cast<QmlBindingWrapper *>(that);
     Q_ASSERT(This->function);
@@ -108,7 +124,8 @@ void QmlBindingWrapper::markObjects(Managed *m, ExecutionEngine *e)
     if (wrapper->qml)
         wrapper->qml->mark(e);
     FunctionObject::markObjects(m, e);
-    wrapper->qmlContext->mark();
+    if (wrapper->qmlContext)
+        wrapper->qmlContext->mark(e);
 }
 
 DEFINE_MANAGED_VTABLE(QmlBindingWrapper);

@@ -317,7 +317,7 @@ QV4::ReturnedValue VME::run(QV4::ExecutionContext *context, const uchar *code,
     MOTH_END_INSTR(StoreQObjectProperty)
 
     MOTH_BEGIN_INSTR(LoadQObjectProperty)
-        STOREVALUE(instr.result, __qmljs_get_qobject_property(context, VALUEPTR(instr.base), instr.propertyIndex));
+        STOREVALUE(instr.result, __qmljs_get_qobject_property(context, VALUEPTR(instr.base), instr.propertyIndex, instr.captureRequired));
     MOTH_END_INSTR(LoadQObjectProperty)
 
     MOTH_BEGIN_INSTR(Push)
@@ -503,9 +503,18 @@ QV4::ReturnedValue VME::run(QV4::ExecutionContext *context, const uchar *code,
         QV4::CallData *callData = reinterpret_cast<QV4::CallData *>(stack + instr.callData);
         callData->tag = QV4::Value::Integer_Type;
         callData->argc = instr.argc;
-        callData->thisObject = QV4::Primitive::undefinedValue();
-        STOREVALUE(instr.result, __qmljs_construct_property(context, VALUEPTR(instr.base), runtimeStrings[instr.name], callData));
+        callData->thisObject = VALUE(instr.base);
+        STOREVALUE(instr.result, __qmljs_construct_property(context, runtimeStrings[instr.name], callData));
     MOTH_END_INSTR(CreateProperty)
+
+    MOTH_BEGIN_INSTR(ConstructPropertyLookup)
+        Q_ASSERT(instr.callData + instr.argc + qOffsetOf(QV4::CallData, args)/sizeof(QV4::SafeValue) <= stackSize);
+        QV4::CallData *callData = reinterpret_cast<QV4::CallData *>(stack + instr.callData);
+        callData->tag = QV4::Value::Integer_Type;
+        callData->argc = instr.argc;
+        callData->thisObject = VALUE(instr.base);
+        STOREVALUE(instr.result, __qmljs_construct_property_lookup(context, instr.index, callData));
+    MOTH_END_INSTR(ConstructPropertyLookup)
 
     MOTH_BEGIN_INSTR(CreateActivationProperty)
         TRACE(inline, "property name = %s, args = %d, argc = %d", runtimeStrings[instr.name]->toQString().toUtf8().constData(), instr.args, instr.argc);

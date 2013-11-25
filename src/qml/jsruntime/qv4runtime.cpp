@@ -533,6 +533,8 @@ void __qmljs_set_property(ExecutionContext *ctx, const ValueRef object, const St
 {
     Scope scope(ctx);
     ScopedObject o(scope, object->toObject(ctx));
+    if (!o)
+        return;
     o->put(name, value);
 }
 
@@ -720,8 +722,8 @@ Bool __qmljs_strict_equal(const ValueRef x, const ValueRef y)
 
     if (x->isNumber())
         return y->isNumber() && x->asDouble() == y->asDouble();
-    if (x->isString())
-        return y->isString() && x->stringValue()->isEqualTo(y->stringValue());
+    if (x->isManaged())
+        return y->isManaged() && x->managed()->isEqualTo(y->managed());
     return false;
 }
 
@@ -964,10 +966,10 @@ ReturnedValue __qmljs_construct_value(ExecutionContext *context, const ValueRef 
     return f->construct(callData);
 }
 
-ReturnedValue __qmljs_construct_property(ExecutionContext *context, const ValueRef base, const StringRef name, CallDataRef callData)
+ReturnedValue __qmljs_construct_property(ExecutionContext *context, const StringRef name, CallDataRef callData)
 {
     Scope scope(context);
-    ScopedObject thisObject(scope, base->toObject(context));
+    ScopedObject thisObject(scope, callData->thisObject.toObject(context));
     if (scope.engine->hasException)
         return Encode::undefined();
 
@@ -977,6 +979,18 @@ ReturnedValue __qmljs_construct_property(ExecutionContext *context, const ValueR
 
     return f->construct(callData);
 }
+
+ReturnedValue __qmljs_construct_property_lookup(ExecutionContext *context, uint index, CallDataRef callData)
+{
+    Lookup *l = context->lookups + index;
+    SafeValue v;
+    v = l->getter(l, callData->thisObject);
+    if (!v.isManaged())
+        return context->throwTypeError();
+
+    return v.managed()->construct(callData);
+}
+
 
 void __qmljs_throw(ExecutionContext *context, const ValueRef value)
 {
@@ -1247,7 +1261,7 @@ ReturnedValue __qmljs_get_scope_object(NoThrowContext *ctx)
     return QObjectWrapper::wrap(ctx->engine, c->getScopeObject());
 }
 
-ReturnedValue __qmljs_get_qobject_property(ExecutionContext *ctx, const ValueRef object, int propertyIndex)
+ReturnedValue __qmljs_get_qobject_property(ExecutionContext *ctx, const ValueRef object, int propertyIndex, bool captureRequired)
 {
     Scope scope(ctx);
     QV4::Scoped<QObjectWrapper> wrapper(scope, object);
@@ -1255,7 +1269,7 @@ ReturnedValue __qmljs_get_qobject_property(ExecutionContext *ctx, const ValueRef
         ctx->throwTypeError(QStringLiteral("Cannot read property of null"));
         return Encode::undefined();
     }
-    return wrapper->getProperty(ctx, propertyIndex);
+    return wrapper->getProperty(ctx, propertyIndex, captureRequired);
 }
 
 void __qmljs_set_qobject_property(ExecutionContext *ctx, const ValueRef object, int propertyIndex, const ValueRef value)

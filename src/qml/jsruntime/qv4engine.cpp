@@ -72,6 +72,10 @@
 
 #include "qv4isel_moth_p.h"
 
+#if USE(PTHREADS)
+#  include <pthread.h>
+#endif
+
 QT_BEGIN_NAMESPACE
 
 using namespace QV4;
@@ -82,6 +86,42 @@ static ReturnedValue throwTypeError(CallContext *ctx)
 {
     return ctx->throwTypeError();
 }
+
+quintptr getStackLimit()
+{
+    quintptr stackLimit;
+#if USE(PTHREADS) && !OS(QNX)
+#  if OS(DARWIN)
+    pthread_t thread_self = pthread_self();
+    void *stackTop = pthread_get_stackaddr_np(thread_self);
+    stackLimit = reinterpret_cast<quintptr>(stackTop);
+    stackLimit -= pthread_get_stacksize_np(thread_self);
+#  else
+    void* stackBottom = 0;
+    pthread_attr_t attr;
+    pthread_getattr_np(pthread_self(), &attr);
+    size_t stackSize = 0;
+    pthread_attr_getstack(&attr, &stackBottom, &stackSize);
+    pthread_attr_destroy(&attr);
+
+    stackLimit = reinterpret_cast<quintptr>(stackBottom);
+#  endif
+// This is wrong. StackLimit is the currently committed stack size, not the real end.
+// only way to get that limit is apparently by using VirtualQuery (Yuck)
+//#elif OS(WINDOWS)
+//    PNT_TIB tib = (PNT_TIB)NtCurrentTeb();
+//    stackLimit = static_cast<quintptr>(tib->StackLimit);
+#else
+    int dummy;
+    // this is inexact, as part of the stack is used when being called here,
+    // but let's simply default to 1MB from where the stack is right now
+    stackLimit = reinterpret_cast<qintptr>(&dummy) - 1024*1024;
+#endif
+
+    // 256k slack
+    return stackLimit + 256*1024;
+}
+
 
 ExecutionEngine::ExecutionEngine(QQmlJS::EvalISelFactory *factory)
     : memoryManager(new QV4::MemoryManager)
@@ -118,10 +158,16 @@ ExecutionEngine::ExecutionEngine(QQmlJS::EvalISelFactory *factory)
 
     memoryManager->setExecutionEngine(this);
 
-    // reserve 8MB for the JS stack
-    *jsStack = WTF::PageAllocation::allocate(8*1024*1024, WTF::OSAllocator::JSVMStackPages, true);
+    // reserve space for the JS stack
+    // we allow it to grow to 2 times JSStackLimit, as we can overshoot due to garbage collection
+    // and ScopedValues allocated outside of JIT'ed methods.
+    *jsStack = WTF::PageAllocation::allocate(2*JSStackLimit, WTF::OSAllocator::JSVMStackPages, true);
     jsStackBase = (SafeValue *)jsStack->base();
     jsStackTop = jsStackBase;
+
+    // set up stack limits
+    jsStackLimit = jsStackBase + JSStackLimit/sizeof(SafeValue);
+    cStackLimit = getStackLimit();
 
     Scope scope(this);
 
@@ -336,7 +382,8 @@ void ExecutionEngine::enableDebugger()
 
 void ExecutionEngine::initRootContext()
 {
-    rootContext = static_cast<GlobalContext *>(memoryManager->allocContext(sizeof(GlobalContext) + sizeof(CallData)));
+    rootContext = static_cast<GlobalContext *>(memoryManager->allocManaged(sizeof(GlobalContext) + sizeof(CallData)));
+    rootContext->init();
     current = rootContext;
     current->parent = 0;
     rootContext->initGlobalContext(this);
@@ -349,9 +396,9 @@ InternalClass *ExecutionEngine::newClass(const InternalClass &other)
 
 ExecutionContext *ExecutionEngine::pushGlobalContext()
 {
-    GlobalContext *g = static_cast<GlobalContext *>(memoryManager->allocContext(sizeof(GlobalContext)));
+    GlobalContext *g = new (memoryManager) GlobalContext;
     ExecutionContext *oldNext = g->next;
-    *g = *rootContext;
+    memcpy(g, rootContext, sizeof(GlobalContext));
     g->next = oldNext;
     g->parent = current;
     current = g;
@@ -574,11 +621,12 @@ namespace {
         void resolve(StackFrame *frame, ExecutionContext *context, Function *function)
         {
             qptrdiff offset;
-            if (context->interpreterInstructionPointer)
+            if (context->interpreterInstructionPointer) {
                 offset = *context->interpreterInstructionPointer - 1 - function->codeData;
-            else
-                offset = context->jitInstructionPointer - (char*)function->codePtr;
-            frame->line = function->lineNumberForProgramCounter(offset);
+                frame->line = function->lineNumberForProgramCounter(offset);
+            } else {
+                frame->line = context->lineNumber;
+            }
         }
     };
 }
@@ -701,7 +749,7 @@ void ExecutionEngine::markObjects()
 
     ExecutionContext *c = current;
     while (c) {
-        c->mark();
+        c->mark(this);
         c = c->parent;
     }
 
@@ -865,6 +913,21 @@ QQmlError ExecutionEngine::catchExceptionAsQmlError(ExecutionContext *context)
     } else
         error.setDescription(exception->toQStringNoThrow());
     return error;
+}
+
+bool ExecutionEngine::recheckCStackLimits()
+{
+    int dummy;
+#ifdef Q_OS_WIN
+    // ### this is only required on windows, where we currently use heuristics to get the stack limit
+    if (cStackLimit - reinterpret_cast<quintptr>(&dummy) > 128*1024)
+        // we're more then 128k away from our stack limit, assume the thread has changed, and
+        // call getStackLimit
+#endif
+    // this can happen after a thread change
+    cStackLimit = getStackLimit();
+
+    return (reinterpret_cast<quintptr>(&dummy) >= cStackLimit);
 }
 
 QT_END_NAMESPACE

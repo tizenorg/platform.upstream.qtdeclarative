@@ -466,23 +466,6 @@ public:
         V4IR::BasicBlock *block;
     };
 
-    void saveInstructionPointer(RegisterID freeScratchRegister) {
-        Address ipAddr(ContextRegister, qOffsetOf(QV4::ExecutionContext, jitInstructionPointer));
-        RegisterID sourceRegister = freeScratchRegister;
-
-#if CPU(X86_64) || CPU(X86)
-        callToRetrieveIP();
-        peek(sourceRegister);
-        pop();
-#elif CPU(ARM)
-        move(JSC::ARMRegisters::pc, sourceRegister);
-#else
-#error "Port me!"
-#endif
-
-        storePtr(sourceRegister, ipAddr);
-    }
-
     void callAbsolute(const char* functionName, FunctionPtr function) {
         CallToLink ctl;
         ctl.call = call();
@@ -1397,8 +1380,6 @@ public:
 
     JSC::MacroAssemblerCodeRef link(int *codeSize);
 
-    void recordLineNumber(int lineNumber);
-
     const StackLayout stackLayout() const { return _stackLayout; }
     ConstantTable &constantTable() { return _constTable; }
 
@@ -1424,13 +1405,6 @@ private:
 
     QV4::ExecutableAllocator *_executableAllocator;
     InstructionSelection *_isel;
-
-    struct CodeLineNumerMapping
-    {
-        Assembler::Label location;
-        int lineNumber;
-    };
-    QVector<CodeLineNumerMapping> codeLineNumberMappings;
 };
 
 template <typename T> inline void prepareRelativeCall(const T &, Assembler *){}
@@ -1496,7 +1470,7 @@ protected:
     virtual void getProperty(V4IR::Expr *base, const QString &name, V4IR::Temp *target);
     virtual void setProperty(V4IR::Expr *source, V4IR::Expr *targetBase, const QString &targetName);
     virtual void setQObjectProperty(V4IR::Expr *source, V4IR::Expr *targetBase, int propertyIndex);
-    virtual void getQObjectProperty(V4IR::Expr *base, int propertyIndex, V4IR::Temp *target);
+    virtual void getQObjectProperty(V4IR::Expr *base, int propertyIndex, bool captureRequired, V4IR::Temp *target);
     virtual void getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR::Temp *target);
     virtual void setElement(V4IR::Expr *source, V4IR::Expr *targetBase, V4IR::Expr *targetIndex);
     virtual void copyValue(V4IR::Temp *sourceTemp, V4IR::Temp *targetTemp);
@@ -1651,7 +1625,6 @@ private:
     }
 
     V4IR::BasicBlock *_block;
-    V4IR::Function* _function;
     QSet<V4IR::Jump *> _removableJumps;
     Assembler* _as;
 

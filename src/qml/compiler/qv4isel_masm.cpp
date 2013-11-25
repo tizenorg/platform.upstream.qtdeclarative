@@ -99,72 +99,6 @@ QV4::ExecutableAllocator::ChunkOfPages *CompilationUnit::chunkForFunction(int fu
 }
 
 namespace {
-class ConvertTemps: protected V4IR::StmtVisitor, protected V4IR::ExprVisitor
-{
-    int _nextFreeStackSlot;
-    QHash<V4IR::Temp, int> _stackSlotForTemp;
-
-    void renumber(V4IR::Temp *t)
-    {
-        if (t->kind != V4IR::Temp::VirtualRegister)
-            return;
-
-        int stackSlot = _stackSlotForTemp.value(*t, -1);
-        if (stackSlot == -1) {
-            stackSlot = _nextFreeStackSlot++;
-            _stackSlotForTemp[*t] = stackSlot;
-        }
-
-        t->kind = V4IR::Temp::StackSlot;
-        t->index = stackSlot;
-    }
-
-public:
-    ConvertTemps()
-        : _nextFreeStackSlot(0)
-    {}
-
-    void toStackSlots(V4IR::Function *function)
-    {
-        _stackSlotForTemp.reserve(function->tempCount);
-
-        foreach (V4IR::BasicBlock *bb, function->basicBlocks)
-            foreach (V4IR::Stmt *s, bb->statements)
-                s->accept(this);
-
-        function->tempCount = _nextFreeStackSlot;
-    }
-
-protected:
-    virtual void visitConst(V4IR::Const *) {}
-    virtual void visitString(V4IR::String *) {}
-    virtual void visitRegExp(V4IR::RegExp *) {}
-    virtual void visitName(V4IR::Name *) {}
-    virtual void visitTemp(V4IR::Temp *e) { renumber(e); }
-    virtual void visitClosure(V4IR::Closure *) {}
-    virtual void visitConvert(V4IR::Convert *e) { e->expr->accept(this); }
-    virtual void visitUnop(V4IR::Unop *e) { e->expr->accept(this); }
-    virtual void visitBinop(V4IR::Binop *e) { e->left->accept(this); e->right->accept(this); }
-    virtual void visitCall(V4IR::Call *e) {
-        e->base->accept(this);
-        for (V4IR::ExprList *it = e->args; it; it = it->next)
-            it->expr->accept(this);
-    }
-    virtual void visitNew(V4IR::New *e) {
-        e->base->accept(this);
-        for (V4IR::ExprList *it = e->args; it; it = it->next)
-            it->expr->accept(this);
-    }
-    virtual void visitSubscript(V4IR::Subscript *e) { e->base->accept(this); e->index->accept(this); }
-    virtual void visitMember(V4IR::Member *e) { e->base->accept(this); }
-    virtual void visitExp(V4IR::Exp *s) { s->expr->accept(this); }
-    virtual void visitMove(V4IR::Move *s) { s->target->accept(this); s->source->accept(this); }
-    virtual void visitJump(V4IR::Jump *) {}
-    virtual void visitCJump(V4IR::CJump *s) { s->cond->accept(this); }
-    virtual void visitRet(V4IR::Ret *s) { s->expr->accept(this); }
-    virtual void visitPhi(V4IR::Phi *) { Q_UNREACHABLE(); }
-};
-
 inline bool isPregOrConst(V4IR::Expr *e)
 {
     if (V4IR::Temp *t = e->asTemp())
@@ -505,15 +439,6 @@ static void printDisassembledOutputWithCalls(const char* output, const QHash<voi
 }
 #endif
 
-void Assembler::recordLineNumber(int lineNumber)
-{
-    CodeLineNumerMapping mapping;
-    mapping.location = label();
-    mapping.lineNumber = lineNumber;
-    codeLineNumberMappings << mapping;
-}
-
-
 JSC::MacroAssemblerCodeRef Assembler::link(int *codeSize)
 {
     Label endOfCode = label();
@@ -532,14 +457,6 @@ JSC::MacroAssemblerCodeRef Assembler::link(int *codeSize)
 
     JSC::JSGlobalData dummy(_executableAllocator);
     JSC::LinkBuffer linkBuffer(dummy, this, 0);
-
-    QVector<uint> lineNumberMapping(codeLineNumberMappings.count() * 2);
-
-    for (int i = 0; i < codeLineNumberMappings.count(); ++i) {
-        lineNumberMapping[i * 2] = linkBuffer.offsetOf(codeLineNumberMappings.at(i).location);
-        lineNumberMapping[i * 2 + 1] = codeLineNumberMappings.at(i).lineNumber;
-    }
-    _isel->jsUnitGenerator()->registerLineNumberMapping(_function, lineNumberMapping);
 
     QHash<void*, const char*> functions;
     foreach (CallToLink ctl, _callsToLink) {
@@ -625,7 +542,6 @@ JSC::MacroAssemblerCodeRef Assembler::link(int *codeSize)
 InstructionSelection::InstructionSelection(QV4::ExecutableAllocator *execAllocator, V4IR::Module *module, Compiler::JSUnitGenerator *jsGenerator)
     : EvalInstructionSelection(execAllocator, module, jsGenerator)
     , _block(0)
-    , _function(0)
     , _as(0)
 {
     compilationUnit = new CompilationUnit;
@@ -709,9 +625,9 @@ void InstructionSelection::run(int functionIndex)
 
         foreach (V4IR::Stmt *s, _block->statements) {
             if (s->location.isValid()) {
-                _as->recordLineNumber(s->location.startLine);
                 if (int(s->location.startLine) != lastLine) {
-                    _as->saveInstructionPointer(Assembler::ScratchRegister);
+                    Assembler::Address lineAddr(Assembler::ContextRegister, qOffsetOf(QV4::ExecutionContext, lineNumber));
+                    _as->store32(Assembler::TrustedImm32(s->location.startLine), lineAddr);
                     lastLine = s->location.startLine;
                 }
             }
@@ -1061,9 +977,10 @@ void InstructionSelection::getProperty(V4IR::Expr *base, const QString &name, V4
     }
 }
 
-void InstructionSelection::getQObjectProperty(V4IR::Expr *base, int propertyIndex, V4IR::Temp *target)
+void InstructionSelection::getQObjectProperty(V4IR::Expr *base, int propertyIndex, bool captureRequired, V4IR::Temp *target)
 {
-    generateFunctionCall(target, __qmljs_get_qobject_property, Assembler::ContextRegister, Assembler::PointerToValue(base), Assembler::TrustedImm32(propertyIndex));
+    generateFunctionCall(target, __qmljs_get_qobject_property, Assembler::ContextRegister, Assembler::PointerToValue(base), Assembler::TrustedImm32(propertyIndex),
+                         Assembler::TrustedImm32(captureRequired));
 }
 
 void InstructionSelection::setProperty(V4IR::Expr *source, V4IR::Expr *targetBase,
@@ -1105,13 +1022,13 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
         _as->and32(Assembler::TrustedImm32(QV4::Managed::SimpleArray), Assembler::ReturnValueRegister);
         Assembler::Jump notSimple = _as->branch32(Assembler::Equal, Assembler::ReturnValueRegister, Assembler::TrustedImm32(0));
 
-        Assembler::Jump fallback;
+        Assembler::Jump fallback, fallback2;
         if (tindex->kind == V4IR::Temp::PhysicalRegister) {
             if (tindex->type == V4IR::SInt32Type) {
                 _as->move((Assembler::RegisterID) tindex->index, Assembler::ScratchRegister);
             } else {
                 // double, convert and check if it's a int
-                _as->truncateDoubleToUint32((Assembler::FPRegisterID) tindex->index, Assembler::ScratchRegister);
+                fallback2 = _as->branchTruncateDoubleToUint32((Assembler::FPRegisterID) tindex->index, Assembler::ScratchRegister);
                 _as->convertInt32ToDouble(Assembler::ScratchRegister, Assembler::FPGpr0);
                 fallback = _as->branchDouble(Assembler::DoubleNotEqual, Assembler::FPGpr0, (Assembler::FPRegisterID) tindex->index);
             }
@@ -1128,7 +1045,7 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
             _as->move(Assembler::TrustedImm64(QV4::Value::NaNEncodeMask), Assembler::ReturnValueRegister);
             _as->xor64(Assembler::ScratchRegister, Assembler::ReturnValueRegister);
             _as->move64ToDouble(Assembler::ReturnValueRegister, Assembler::FPGpr0);
-            _as->truncateDoubleToUint32(Assembler::FPGpr0, Assembler::ScratchRegister);
+            fallback2 = _as->branchTruncateDoubleToUint32(Assembler::FPGpr0, Assembler::ScratchRegister);
             _as->convertInt32ToDouble(Assembler::ScratchRegister, Assembler::FPGpr1);
             fallback = _as->branchDouble(Assembler::DoubleNotEqualOrUnordered, Assembler::FPGpr0, Assembler::FPGpr1);
 
@@ -1161,6 +1078,8 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
         outOfRange.link(_as);
         if (fallback.isSet())
             fallback.link(_as);
+        if (fallback2.isSet())
+            fallback2.link(_as);
         notSimple.link(_as);
         notManaged.link(_as);
 
@@ -1841,9 +1760,18 @@ void InstructionSelection::constructActivationProperty(V4IR::Name *func, V4IR::E
 
 void InstructionSelection::constructProperty(V4IR::Temp *base, const QString &name, V4IR::ExprList *args, V4IR::Temp *result)
 {
-    prepareCallData(args, 0);
+    prepareCallData(args, base);
+    if (useFastLookups) {
+        uint index = registerGetterLookup(name);
+        generateFunctionCall(result, __qmljs_construct_property_lookup,
+                             Assembler::ContextRegister,
+                             Assembler::TrustedImm32(index),
+                             baseAddressForCallData());
+        return;
+    }
+
     generateFunctionCall(result, __qmljs_construct_property, Assembler::ContextRegister,
-                         Assembler::Reference(base), Assembler::PointerToString(name),
+                         Assembler::PointerToString(name),
                          baseAddressForCallData());
 }
 

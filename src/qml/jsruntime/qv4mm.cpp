@@ -155,6 +155,19 @@ struct MemoryManager::Data
 
     QVector<Chunk> heapChunks;
 
+
+    struct LargeItem {
+        LargeItem *next;
+        void *data;
+
+        Managed *managed() {
+            return reinterpret_cast<Managed *>(&data);
+        }
+    };
+
+    LargeItem *largeItems;
+
+
     // statistics:
 #ifdef DETAILED_MM_STATS
     QVector<unsigned> allocSizeCounters;
@@ -167,6 +180,7 @@ struct MemoryManager::Data
         , stackTop(0)
         , totalItems(0)
         , totalAlloc(0)
+        , largeItems(0)
     {
         memset(smallItems, 0, sizeof(smallItems));
         memset(nChunks, 0, sizeof(nChunks));
@@ -200,7 +214,6 @@ bool operator<(const MemoryManager::Data::Chunk &a, const MemoryManager::Data::C
 
 MemoryManager::MemoryManager()
     : m_d(new Data(true))
-    , m_contextList(0)
     , m_persistentValues(0)
     , m_weakValues(0)
 {
@@ -258,8 +271,14 @@ Managed *MemoryManager::alloc(std::size_t size)
 
     size_t pos = size >> 4;
 
-    // fits into a small bucket
-    Q_ASSERT(size < MemoryManager::Data::MaxItemSize);
+    // doesn't fit into a small bucket
+    if (size >= MemoryManager::Data::MaxItemSize) {
+        // we use malloc for this
+        MemoryManager::Data::LargeItem *item = static_cast<MemoryManager::Data::LargeItem *>(malloc(size + sizeof(MemoryManager::Data::LargeItem)));
+        item->next = m_d->largeItems;
+        m_d->largeItems = item;
+        return item->managed();
+    }
 
     Managed *m = m_d->smallItems[pos];
     if (m)
@@ -447,18 +466,21 @@ void MemoryManager::sweep(bool lastSweep)
     for (QVector<Data::Chunk>::iterator i = m_d->heapChunks.begin(), ei = m_d->heapChunks.end(); i != ei; ++i)
         sweep(reinterpret_cast<char*>(i->memory.base()), i->memory.size(), i->chunkSize, &deletable);
 
-    ExecutionContext *ctx = m_contextList;
-    ExecutionContext **n = &m_contextList;
-    while (ctx) {
-        ExecutionContext *next = ctx->next;
-        if (!ctx->marked) {
-            free(ctx);
-            *n = next;
-        } else {
-            ctx->marked = false;
-            n = &ctx->next;
+    Data::LargeItem *i = m_d->largeItems;
+    Data::LargeItem **last = &m_d->largeItems;
+    while (i) {
+        Managed *m = i->managed();
+        Q_ASSERT(m->inUse);
+        if (m->markBit) {
+            m->markBit = 0;
+            last = &i->next;
+            i = i->next;
+            continue;
         }
-        ctx = next;
+
+        *last = i->next;
+        free(i);
+        i = *last;
     }
 
     deletable = *firstDeletable;

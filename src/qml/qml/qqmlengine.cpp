@@ -66,7 +66,7 @@
 #include <private/qv4debugservice_p.h>
 #include <private/qdebugmessageservice_p.h>
 #include "qqmlincubator.h"
-#include "qqmlabstracturlinterceptor.h"
+#include "qqmlabstracturlinterceptor_p.h"
 #include <private/qv8profilerservice_p.h>
 #include <private/qqmlboundsignal_p.h>
 
@@ -556,7 +556,7 @@ QQmlEnginePrivate::QQmlEnginePrivate(QQmlEngine *e)
   workerScriptEngine(0), activeVME(0),
   activeObjectCreator(0),
   networkAccessManager(0), networkAccessManagerFactory(0), urlInterceptor(0),
-  scarceResourcesRefCount(0), typeLoader(e), importDatabase(e), uniqueId(1),
+  scarceResourcesRefCount(0), importDatabase(e), typeLoader(e), uniqueId(1),
   incubatorCount(0), incubationController(0), mutex(QMutex::Recursive)
 {
     useNewCompiler = qmlUseNewCompiler();

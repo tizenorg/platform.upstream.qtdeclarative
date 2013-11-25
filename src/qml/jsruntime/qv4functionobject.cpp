@@ -213,7 +213,7 @@ void FunctionObject::markObjects(Managed *that, ExecutionEngine *e)
 //        formalParameterList[i]->mark();
 //    for (uint i = 0; i < varCount; ++i)
 //        varList[i]->mark();
-    o->scope->mark();
+    o->scope->mark(e);
     if (o->function)
         o->function->mark(e);
 
@@ -348,7 +348,7 @@ ReturnedValue FunctionPrototype::method_apply(CallContext *ctx)
     ScopedCallData callData(scope, len);
 
     if (len) {
-        if (arr->protoHasArray() || arr->hasAccessorProperty) {
+        if (!(arr->flags & SimpleArray) || arr->protoHasArray() || arr->hasAccessorProperty) {
             for (quint32 i = 0; i < len; ++i)
                 callData->args[i] = arr->getIndexed(i);
         } else {
@@ -438,6 +438,7 @@ ReturnedValue ScriptFunction::construct(Managed *that, CallData *callData)
     ExecutionEngine *v4 = that->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
 
     Scope scope(v4);
     Scoped<ScriptFunction> f(scope, static_cast<ScriptFunction *>(that));
@@ -468,6 +469,7 @@ ReturnedValue ScriptFunction::call(Managed *that, CallData *callData)
     ExecutionEngine *v4 = f->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
 
     ExecutionContext *context = v4->current;
     Scope scope(context);
@@ -523,6 +525,7 @@ ReturnedValue SimpleScriptFunction::construct(Managed *that, CallData *callData)
     ExecutionEngine *v4 = that->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
 
     Scope scope(v4);
     Scoped<SimpleScriptFunction> f(scope, static_cast<SimpleScriptFunction *>(that));
@@ -566,6 +569,7 @@ ReturnedValue SimpleScriptFunction::call(Managed *that, CallData *callData)
     ExecutionEngine *v4 = that->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
 
     SimpleScriptFunction *f = static_cast<SimpleScriptFunction *>(that);
 
@@ -617,6 +621,7 @@ ReturnedValue BuiltinFunction::call(Managed *that, CallData *callData)
     ExecutionEngine *v4 = f->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
 
     ExecutionContext *context = v4->current;
 
@@ -636,6 +641,8 @@ ReturnedValue IndexedBuiltinFunction::call(Managed *that, CallData *callData)
     ExecutionEngine *v4 = f->internalClass->engine;
     if (v4->hasException)
         return Encode::undefined();
+    CHECK_STACK_LIMITS(v4);
+
     ExecutionContext *context = v4->current;
     Scope scope(v4);
 
