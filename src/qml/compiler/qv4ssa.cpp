@@ -52,6 +52,7 @@
 #include <qv4runtime_p.h>
 #include <qv4context_p.h>
 #include <private/qqmlpropertycache_p.h>
+#include <private/qqmlengine_p.h>
 #include <cmath>
 #include <iostream>
 #include <cassert>
@@ -212,6 +213,48 @@ void showMeTheCode(Function *function)
     }
 }
 
+class ProcessedBlocks
+{
+    QBitArray processed;
+
+public:
+    ProcessedBlocks(const QVector<BasicBlock *> allBlocks)
+    {
+        int maxBB = 0;
+        foreach (BasicBlock *bb, allBlocks)
+            maxBB = qMax(maxBB, bb->index);
+        processed = QBitArray(maxBB + 1, false);
+    }
+
+    bool alreadyProcessed(BasicBlock *bb) const
+    {
+        Q_ASSERT(bb);
+
+        return processed.at(bb->index);
+    }
+
+    void markAsProcessed(BasicBlock *bb)
+    {
+        processed.setBit(bb->index);
+    }
+};
+
+inline Temp *unescapableTemp(Expr *e, bool variablesCanEscape)
+{
+    Temp *t = e->asTemp();
+    if (!t)
+        return 0;
+
+    switch (t->kind) {
+    case Temp::VirtualRegister:
+        return t;
+    case Temp::Local:
+        return variablesCanEscape ? 0 : t;
+    default:
+        return 0;
+    }
+}
+
 class DominatorTree {
     int N;
     QHash<BasicBlock *, int> dfnum;
@@ -352,15 +395,6 @@ class DominatorTree {
 #endif // SHOW_SSA
     }
 
-    bool dominates(BasicBlock *dominator, BasicBlock *dominated) const {
-        for (BasicBlock *it = dominated; it; it = idom[it]) {
-            if (it == dominator)
-                return true;
-        }
-
-        return false;
-    }
-
     struct NodeProgress {
         QSet<BasicBlock *> children;
         QSet<BasicBlock *> todo;
@@ -472,6 +506,15 @@ public:
 
     BasicBlock *immediateDominator(BasicBlock *bb) const {
         return idom[bb];
+    }
+
+    bool dominates(BasicBlock *dominator, BasicBlock *dominated) const {
+        for (BasicBlock *it = dominated; it; it = idom[it]) {
+            if (it == dominator)
+                return true;
+        }
+
+        return false;
     }
 };
 
@@ -625,15 +668,86 @@ void insertPhiNode(const Temp &a, BasicBlock *y, Function *f) {
     }
 }
 
+// High-level (recursive) algorithm:
+//   Mapping: old temp number -> new temp number
+//
+//   Start:
+//     Rename(start-node)
+//
+//   Rename(node, mapping):
+//     for each statement S in block n
+//       if S not in a phi-function
+//         for each use of some variable x in S
+//           y = mapping[x]
+//           replace the use of x with y in S
+//       for each definition of some variable a in S                        [1]
+//         a_new = generate new/unique temp
+//         mapping[a] = a_new
+//         replace definition of a with definition of a_new in S
+//     for each successor Y of block n
+//       Suppose n is the j-th predecessor of Y
+//       for each phi function in Y
+//         suppose the j-th operand of the phi-function is a
+//         i = mapping[a]
+//         replace the j-th operand with a_i
+//     for each child X of n                                                [2]
+//       Rename(X)
+//     for each newly generated temp from step [1] restore the old value    [3]
+//
+// This algorithm can run out of CPU stack space when there are lots of basic-blocks, like in a
+// switch statement with 8000 cases that all fall-through. The iterativer version below uses a
+// work-item stack, where step [1] from the algorithm above also pushes an "undo mapping change",
+// and step [2] pushes a "rename(X)" action. This eliminates step [3].
+//
+// Iterative version:
+//   Mapping: old temp number -> new temp number
+//
+//   The stack can hold two kinds of actions:
+//     "Rename basic block n"
+//     "Restore count for temp"
+//
+//   Start:
+//     counter = 0
+//     push "Rename start node" onto the stack
+//     while the stack is not empty:
+//       take the last item, and process it
+//
+//   Rename(n) =
+//     for each statement S in block n
+//       if S not in a phi-function
+//         for each use of some variable x in S
+//           y = mapping[x]
+//           replace the use of x with y in S
+//       for each definition of some variable a in S
+//         old = mapping[a]
+//         push Undo(a, old)
+//         counter = counter + 1
+//         new = counter;
+//         mapping[a] = new
+//         replace definition of a with definition of a_new in S
+//     for each successor Y of block n
+//       Suppose n is the j-th predecessor of Y
+//       for each phi function in Y
+//         suppose the j-th operand of the phi-function is a
+//         i = mapping[a]
+//         replace the j-th operand with a_i
+//     for each child X of n
+//       push Rename(X)
+//
+//   Undo(t, c) =
+//     mapping[t] = c
 class VariableRenamer: public StmtVisitor, public ExprVisitor
 {
     Function *function;
-    QHash<Temp, QStack<unsigned> > stack;
-    QSet<BasicBlock *> seen;
-
-    QHash<Temp, unsigned> defCounts;
-
     const bool variablesCanEscape;
+    unsigned tempCount;
+
+    typedef QHash<unsigned, int> Mapping; // maps from existing/old temp number to the new and unique temp number.
+    enum { Absent = -1 };
+    Mapping localMapping;
+    Mapping vregMapping;
+    ProcessedBlocks processed;
+
     bool isRenamable(Temp *t) const
     {
         switch (t->kind) {
@@ -650,99 +764,122 @@ class VariableRenamer: public StmtVisitor, public ExprVisitor
             return false;
         }
     }
-    int nextFreeTemp() {
-        const int next = function->tempCount++;
-//        qDebug()<<"Next free temp:"<<next;
-        return next;
-    }
 
-    /*
+    struct TodoAction {
+        enum { RestoreLocal, RestoreVReg, Rename } action;
+        union {
+            struct {
+                unsigned temp;
+                int previous;
+            } restoreData;
+            struct {
+                BasicBlock *basicBlock;
+            } renameData;
+        };
 
-    Initialization:
-      for each variable a
-        count[a] = 0;
-        stack[a] = empty;
-        push 0 onto stack
+        bool isValid() const { return action != Rename || renameData.basicBlock != 0; }
 
-    Rename(n) =
-      for each statement S in block n [1]
-        if S not in a phi-function
-          for each use of some variable x in S
-            i = top(stack[x])
-            replace the use of x with x_i in S
-        for each definition of some variable a in S
-          count[a] = count[a] + 1
-          i = count[a]
-          push i onto stack[a]
-          replace definition of a with definition of a_i in S
-      for each successor Y of block n [2]
-        Suppose n is the j-th predecessor of Y
-        for each phi function in Y
-          suppose the j-th operand of the phi-function is a
-          i = top(stack[a])
-          replace the j-th operand with a_i
-      for each child X of n [3]
-        Rename(X)
-      for each statement S in block n [4]
-        for each definition of some variable a in S
-          pop stack[a]
+        TodoAction()
+        {
+            action = Rename;
+            renameData.basicBlock = 0;
+        }
 
-     */
+        TodoAction(const Temp &t, int prev)
+        {
+            Q_ASSERT(t.kind == Temp::Local || t.kind == Temp::VirtualRegister);
+
+            action = t.kind == Temp::Local ? RestoreLocal : RestoreVReg;
+            restoreData.temp = t.index;
+            restoreData.previous = prev;
+        }
+
+        TodoAction(BasicBlock *bb)
+        {
+            Q_ASSERT(bb);
+
+            action = Rename;
+            renameData.basicBlock = bb;
+        }
+    };
+
+    QVector<TodoAction> todo;
 
 public:
     VariableRenamer(Function *f)
         : function(f)
         , variablesCanEscape(f->variablesCanEscape())
+        , tempCount(0)
+        , processed(f->basicBlocks)
     {
-        if (!variablesCanEscape) {
-            Temp t;
-            t.init(Temp::Local, 0, 0);
-            for (int i = 0, ei = f->locals.size(); i != ei; ++i) {
-                t.index = i;
-                stack[t].push(nextFreeTemp());
-            }
-        }
-
-        Temp t;
-        t.init(Temp::VirtualRegister, 0, 0);
-        for (int i = 0, ei = f->tempCount; i != ei; ++i) {
-            t.index = i;
-            stack[t].push(i);
-        }
     }
 
     void run() {
-        foreach (BasicBlock *n, function->basicBlocks)
-            rename(n);
+        todo.append(TodoAction(function->basicBlocks.first()));
 
-#ifdef SHOW_SSA
-//        qout << "Temp to local mapping:" << endl;
-//        foreach (int key, tempMapping.keys())
-//            qout << '\t' << key << " -> " << tempMapping[key] << endl;
-#endif
+        while (!todo.isEmpty()) {
+            TodoAction todoAction = todo.back();
+            Q_ASSERT(todoAction.isValid());
+            todo.pop_back();
+
+            switch (todoAction.action) {
+            case TodoAction::Rename:
+                rename(todoAction.renameData.basicBlock);
+                break;
+            case TodoAction::RestoreLocal:
+                restore(localMapping, todoAction.restoreData.temp, todoAction.restoreData.previous);
+                break;
+            case TodoAction::RestoreVReg:
+                restore(vregMapping, todoAction.restoreData.temp, todoAction.restoreData.previous);
+                break;
+            default:
+                Q_UNREACHABLE();
+            }
+        }
+
+        function->tempCount = tempCount;
     }
 
-    void rename(BasicBlock *n) {
-        if (seen.contains(n))
-            return;
-        seen.insert(n);
-//        qDebug() << "I: L"<<n->index;
+private:
+    static inline void restore(Mapping &mapping, unsigned temp, int previous)
+    {
+        if (previous == Absent)
+            mapping.remove(temp);
+        else
+            mapping[temp] = previous;
+    }
 
-        // [1]:
-        foreach (Stmt *s, n->statements)
+    void rename(BasicBlock *bb)
+    {
+        while (bb && !processed.alreadyProcessed(bb)) {
+            renameStatementsAndPhis(bb);
+            processed.markAsProcessed(bb);
+
+            BasicBlock *next = 0;
+            foreach (BasicBlock *out, bb->out) {
+                if (processed.alreadyProcessed(out))
+                    continue;
+                if (!next)
+                    next = out;
+                else
+                    todo.append(TodoAction(out));
+            }
+            bb = next;
+        }
+    }
+
+    void renameStatementsAndPhis(BasicBlock *bb)
+    {
+        foreach (Stmt *s, bb->statements)
             s->accept(this);
 
-        QHash<Temp, unsigned> dc = defCounts;
-        defCounts.clear();
-
-        // [2]:
-        foreach (BasicBlock *Y, n->out) {
-            const int j = Y->in.indexOf(n);
+        foreach (BasicBlock *Y, bb->out) {
+            const int j = Y->in.indexOf(bb);
             Q_ASSERT(j >= 0 && j < Y->in.size());
             foreach (Stmt *s, Y->statements) {
                 if (Phi *phi = s->asPhi()) {
                     Temp *t = phi->d->incoming[j]->asTemp();
-                    unsigned newTmp = stack[*t].top();
+                    unsigned newTmp = currentNumber(*t);
 //                    qDebug()<<"I: replacing phi use"<<a<<"with"<<newTmp<<"in L"<<Y->index;
                     t->index = newTmp;
                     t->kind = Temp::VirtualRegister;
@@ -751,24 +888,65 @@ public:
                 }
             }
         }
+    }
 
-        // [3]:
-        foreach (BasicBlock *X, n->out)
-            rename(X);
-
-        // [4]:
-        for (QHash<Temp, unsigned>::const_iterator i = dc.begin(), ei = dc.end(); i != ei; ++i) {
-//            qDebug()<<i.key() <<" -> " << i.value();
-            for (unsigned j = 0, ej = i.value(); j < ej; ++j)
-                stack[i.key()].pop();
+    unsigned currentNumber(const Temp &t)
+    {
+        int nr = Absent;
+        switch (t.kind) {
+        case Temp::Local:
+            nr = localMapping.value(t.index, Absent);
+            break;
+        case Temp::VirtualRegister:
+            nr = vregMapping.value(t.index, Absent);
+            break;
+        default:
+            Q_UNREACHABLE();
+            nr = Absent;
+            break;
         }
+        if (nr == Absent) {
+            // Special case: we didn't prune the Phi nodes yet, so for proper temps (virtual
+            // registers) the SSA algorithm might insert superfluous Phis that have uses without
+            // definition. E.g.: if a temporary got introduced in the "then" clause, it "could"
+            // reach the "end-if" block, so there will be a phi node for that temp. A later pass
+            // will clean this up by looking for uses-without-defines in phi nodes. So, what we do
+            // is to generate a new unique number, and leave it dangling.
+            nr = nextFreeTemp(t);
+        }
+
+        return nr;
+    }
+
+    unsigned nextFreeTemp(const Temp &t)
+    {
+        unsigned newIndex = tempCount++;
+        Q_ASSERT(newIndex <= INT_MAX);
+        int oldIndex = Absent;
+
+        switch (t.kind) {
+        case Temp::Local:
+            oldIndex = localMapping.value(t.index, Absent);
+            localMapping.insert(t.index, newIndex);
+            break;
+        case Temp::VirtualRegister:
+            oldIndex = vregMapping.value(t.index, Absent);
+            vregMapping.insert(t.index, newIndex);
+            break;
+        default:
+            Q_UNREACHABLE();
+        }
+
+        todo.append(TodoAction(t, oldIndex));
+
+        return newIndex;
     }
 
 protected:
     virtual void visitTemp(Temp *e) { // only called for uses, not defs
         if (isRenamable(e)) {
 //            qDebug()<<"I: replacing use of"<<e->index<<"with"<<stack[e->index].top();
-            e->index = stack[*e].top();
+            e->index = currentNumber(*e);
             e->kind = Temp::VirtualRegister;
         }
     }
@@ -786,9 +964,7 @@ protected:
 
     void renameTemp(Temp *t) {
         if (isRenamable(t)) {
-            defCounts[*t] = defCounts.value(*t, 0) + 1;
-            const int newIdx = nextFreeTemp();
-            stack[*t].push(newIdx);
+            const int newIdx = nextFreeTemp(*t);
 //            qDebug()<<"I: replacing def of"<<a<<"with"<<newIdx;
             t->kind = Temp::VirtualRegister;
             t->index = newIdx;
@@ -874,12 +1050,15 @@ void convertToSSA(Function *function, const DominatorTree &df)
 
 struct UntypedTemp {
     Temp temp;
+    UntypedTemp() {}
     UntypedTemp(const Temp &t): temp(t) {}
 };
 inline uint qHash(const UntypedTemp &t, uint seed = 0) Q_DECL_NOTHROW
 { return t.temp.index ^ (t.temp.kind | (t.temp.scope << 3)) ^ seed; }
 inline bool operator==(const UntypedTemp &t1, const UntypedTemp &t2) Q_DECL_NOTHROW
 { return t1.temp.index == t2.temp.index && t1.temp.scope == t2.temp.scope && t1.temp.kind == t2.temp.kind; }
+inline bool operator!=(const UntypedTemp &t1, const UntypedTemp &t2) Q_DECL_NOTHROW
+{ return !(t1 == t2); }
 
 class DefUsesCalculator: public StmtVisitor, public ExprVisitor {
 public:
@@ -964,6 +1143,8 @@ public:
         defUse.blockOfStatement = defBlock;
     }
 
+    QList<UntypedTemp> defsUntyped() const { return _defUses.keys(); }
+
     QList<Temp> defs() const {
         QList<Temp> res;
         res.reserve(_defUses.size());
@@ -982,10 +1163,10 @@ public:
     void addUse(const Temp &variable, Stmt * newUse)
     { _defUses[variable].uses.append(newUse); }
 
-    int useCount(const Temp &variable) const
+    int useCount(const UntypedTemp &variable) const
     { return _defUses[variable].uses.size(); }
 
-    Stmt *defStmt(const Temp &variable) const
+    Stmt *defStmt(const UntypedTemp &variable) const
     { return _defUses[variable].defStmt; }
 
     BasicBlock *defStmtBlock(const Temp &variable) const
@@ -997,7 +1178,7 @@ public:
     QList<Temp> usedVars(Stmt *s) const
     { return _usesPerStatement[s]; }
 
-    QList<Stmt *> uses(const Temp &var) const
+    QList<Stmt *> uses(const UntypedTemp &var) const
     { return _defUses[var].uses; }
 
     QVector<Stmt*> removeDefUses(Stmt *s)
@@ -1188,6 +1369,8 @@ protected:
 
     virtual void visitName(Name *e)
     {
+        if (e->freeOfSideEffects)
+            return;
         // TODO: maybe we can distinguish between built-ins of which we know that they do not have
         // a side-effect.
         if (e->builtin == Name::builtin_invalid || (e->id && *e->id != QStringLiteral("this")))
@@ -1209,6 +1392,7 @@ protected:
         e->expr->accept(this);
 
         switch (e->expr->type) {
+        case QObjectType:
         case StringType:
         case VarType:
             markAsSideEffect();
@@ -1227,7 +1411,7 @@ protected:
         case OpNot:
         case OpIncrement:
         case OpDecrement:
-            if (e->expr->type == VarType || e->expr->type == StringType)
+            if (e->expr->type == VarType || e->expr->type == StringType || e->expr->type == QObjectType)
                 markAsSideEffect();
             break;
 
@@ -1243,8 +1427,8 @@ protected:
         _sideEffect = checkForSideEffects(e->left);
         _sideEffect |= checkForSideEffects(e->right);
 
-        if (e->left->type == VarType || e->left->type == StringType
-                || e->right->type == VarType || e->right->type == StringType)
+        if (e->left->type == VarType || e->left->type == StringType || e->left->type == QObjectType
+                || e->right->type == VarType || e->right->type == StringType || e->right->type == QObjectType)
             markAsSideEffect();
     }
 
@@ -1256,6 +1440,8 @@ protected:
 
     virtual void visitMember(Member *e) {
         e->base->accept(this);
+        if (e->freeOfSideEffects)
+            return;
         markAsSideEffect();
     }
 
@@ -1274,23 +1460,115 @@ protected:
     }
 };
 
+struct DiscoveredType {
+    int type;
+    MemberExpressionResolver memberResolver;
+
+    DiscoveredType() : type(UnknownType) {}
+    DiscoveredType(Type t) : type(t) { Q_ASSERT(type != QObjectType); }
+    explicit DiscoveredType(int t) : type(t) { Q_ASSERT(type != QObjectType); }
+    explicit DiscoveredType(MemberExpressionResolver memberResolver) : type(QObjectType), memberResolver(memberResolver) {}
+
+    bool test(Type t) const { return type & t; }
+    bool isNumber() const { return (type & NumberType) && !(type & ~NumberType); }
+
+    bool operator!=(Type other) const { return type != other; }
+    bool operator==(Type other) const { return type == other; }
+    bool operator==(const DiscoveredType &other) const { return type == other.type; }
+    bool operator!=(const DiscoveredType &other) const { return type != other.type; }
+};
+
+class PropagateTempTypes: public StmtVisitor, ExprVisitor
+{
+    const DefUsesCalculator &defUses;
+    UntypedTemp theTemp;
+    DiscoveredType newType;
+
+public:
+    PropagateTempTypes(const DefUsesCalculator &defUses)
+        : defUses(defUses)
+    {}
+
+    void run(const UntypedTemp &temp, const DiscoveredType &type)
+    {
+        newType = type;
+        theTemp = temp;
+        if (Stmt *defStmt = defUses.defStmt(temp))
+            defStmt->accept(this);
+        foreach (Stmt *use, defUses.uses(temp))
+            use->accept(this);
+    }
+
+protected:
+    virtual void visitConst(Const *) {}
+    virtual void visitString(String *) {}
+    virtual void visitRegExp(RegExp *) {}
+    virtual void visitName(Name *) {}
+    virtual void visitTemp(Temp *e) {
+        if (theTemp == UntypedTemp(*e)) {
+            e->type = static_cast<Type>(newType.type);
+            e->memberResolver = newType.memberResolver;
+        }
+    }
+    virtual void visitClosure(Closure *) {}
+    virtual void visitConvert(Convert *e) { e->expr->accept(this); }
+    virtual void visitUnop(Unop *e) { e->expr->accept(this); }
+    virtual void visitBinop(Binop *e) { e->left->accept(this); e->right->accept(this); }
+
+    virtual void visitCall(Call *e) {
+        e->base->accept(this);
+        for (ExprList *it = e->args; it; it = it->next)
+            it->expr->accept(this);
+    }
+    virtual void visitNew(New *e) {
+        e->base->accept(this);
+        for (ExprList *it = e->args; it; it = it->next)
+            it->expr->accept(this);
+    }
+    virtual void visitSubscript(Subscript *e) {
+        e->base->accept(this);
+        e->index->accept(this);
+    }
+
+    virtual void visitMember(Member *e) {
+        e->base->accept(this);
+    }
+
+    virtual void visitExp(Exp *s) {s->expr->accept(this);}
+    virtual void visitMove(Move *s) {
+        s->source->accept(this);
+        s->target->accept(this);
+    }
+
+    virtual void visitJump(Jump *) {}
+    virtual void visitCJump(CJump *s) { s->cond->accept(this); }
+    virtual void visitRet(Ret *s) { s->expr->accept(this); }
+    virtual void visitPhi(Phi *s) {
+        s->targetTemp->accept(this);
+        foreach (Expr *e, s->d->incoming)
+            e->accept(this);
+    }
+};
+
 class TypeInference: public StmtVisitor, public ExprVisitor {
+    QQmlEnginePrivate *qmlEngine;
     bool _variablesCanEscape;
     const DefUsesCalculator &_defUses;
-    QHash<Temp, int> _tempTypes;
+    QHash<Temp, DiscoveredType> _tempTypes;
     QSet<Stmt *> _worklist;
     struct TypingResult {
-        int type;
+        DiscoveredType type;
         bool fullyTyped;
 
-        TypingResult(int type, bool fullyTyped): type(type), fullyTyped(fullyTyped) {}
-        explicit TypingResult(int type = UnknownType): type(type), fullyTyped(type != UnknownType) {}
+        TypingResult(const DiscoveredType &type = DiscoveredType()) : type(type), fullyTyped(type.type != UnknownType) {}
+        explicit TypingResult(MemberExpressionResolver memberResolver): type(memberResolver), fullyTyped(true) {}
     };
     TypingResult _ty;
 
 public:
-    TypeInference(const DefUsesCalculator &defUses)
-        : _defUses(defUses)
+    TypeInference(QQmlEnginePrivate *qmlEngine, const DefUsesCalculator &defUses)
+        : qmlEngine(qmlEngine)
+        , _defUses(defUses)
         , _ty(UnknownType)
     {}
 
@@ -1329,72 +1607,10 @@ public:
             }
         }
 
-        PropagateTempTypes(_tempTypes).run(function);
+        PropagateTempTypes propagator(_defUses);
+        for (QHash<Temp, DiscoveredType>::const_iterator i = _tempTypes.begin(), ei = _tempTypes.end(); i != ei; ++i)
+            propagator.run(i.key(), i.value());
     }
-
-private:
-    class PropagateTempTypes: public StmtVisitor, ExprVisitor
-    {
-    public:
-        PropagateTempTypes(const QHash<Temp, int> &tempTypes)
-            : _tempTypes(tempTypes)
-        {}
-
-        void run(Function *function)
-        {
-            foreach (BasicBlock *bb, function->basicBlocks)
-                foreach (Stmt *s, bb->statements)
-                    s->accept(this);
-        }
-
-    protected:
-        virtual void visitConst(Const *) {}
-        virtual void visitString(String *) {}
-        virtual void visitRegExp(RegExp *) {}
-        virtual void visitName(Name *) {}
-        virtual void visitTemp(Temp *e) { e->type = (Type) _tempTypes[*e]; }
-        virtual void visitClosure(Closure *) {}
-        virtual void visitConvert(Convert *e) { e->expr->accept(this); }
-        virtual void visitUnop(Unop *e) { e->expr->accept(this); }
-        virtual void visitBinop(Binop *e) { e->left->accept(this); e->right->accept(this); }
-
-        virtual void visitCall(Call *e) {
-            e->base->accept(this);
-            for (ExprList *it = e->args; it; it = it->next)
-                it->expr->accept(this);
-        }
-        virtual void visitNew(New *e) {
-            e->base->accept(this);
-            for (ExprList *it = e->args; it; it = it->next)
-                it->expr->accept(this);
-        }
-        virtual void visitSubscript(Subscript *e) {
-            e->base->accept(this);
-            e->index->accept(this);
-        }
-
-        virtual void visitMember(Member *e) {
-            e->base->accept(this);
-        }
-
-        virtual void visitExp(Exp *s) {s->expr->accept(this);}
-        virtual void visitMove(Move *s) {
-            s->source->accept(this);
-            s->target->accept(this);
-        }
-
-        virtual void visitJump(Jump *) {}
-        virtual void visitCJump(CJump *s) { s->cond->accept(this); }
-        virtual void visitRet(Ret *s) { s->expr->accept(this); }
-        virtual void visitPhi(Phi *s) {
-            s->targetTemp->accept(this);
-            foreach (Expr *e, s->d->incoming)
-                e->accept(this);
-        }
-
-    private:
-        QHash<Temp, int> _tempTypes;
-    };
 
 private:
     bool run(Stmt *s) {
@@ -1416,26 +1632,29 @@ private:
         return ty;
     }
 
-    bool isAlwaysAnObject(Temp *t) {
+    bool isAlwaysVar(Temp *t) {
         switch (t->kind) {
         case Temp::Formal:
         case Temp::ScopedFormal:
         case Temp::ScopedLocal:
+            t->type = VarType;
             return true;
         case Temp::Local:
+            if (_variablesCanEscape)
+                t->type = VarType;
             return _variablesCanEscape;
         default:
             return false;
         }
     }
 
-    void setType(Expr *e, int ty) {
+    void setType(Expr *e, DiscoveredType ty) {
         if (Temp *t = e->asTemp()) {
 #if defined(SHOW_SSA)
             qout<<"Setting type for "<< (t->scope?"scoped temp ":"temp ") <<t->index<< " to "<<typeName(Type(ty)) << " (" << ty << ")" << endl;
 #endif
-            if (isAlwaysAnObject(t))
-                ty = VarType;
+            if (isAlwaysVar(t))
+                ty = DiscoveredType(VarType);
             if (_tempTypes[*t] != ty) {
                 _tempTypes[*t] = ty;
 
@@ -1450,7 +1669,7 @@ private:
                 _worklist += QSet<Stmt *>::fromList(_defUses.uses(*t));
             }
         } else {
-            e->type = (Type) ty;
+            e->type = (Type) ty.type;
         }
     }
 
@@ -1470,10 +1689,12 @@ protected:
     virtual void visitRegExp(RegExp *) { _ty = TypingResult(VarType); }
     virtual void visitName(Name *) { _ty = TypingResult(VarType); }
     virtual void visitTemp(Temp *e) {
-        if (isAlwaysAnObject(e))
+        if (isAlwaysVar(e))
             _ty = TypingResult(VarType);
+        else if (e->memberResolver.isValid())
+            _ty = TypingResult(e->memberResolver);
         else
-            _ty = TypingResult(_tempTypes.value(*e, UnknownType));
+            _ty = TypingResult(_tempTypes.value(*e));
         setType(e, _ty.type);
     }
     virtual void visitClosure(Closure *) { _ty = TypingResult(VarType); }
@@ -1505,9 +1726,9 @@ protected:
 
         switch (e->op) {
         case OpAdd:
-            if (leftTy.type & VarType || rightTy.type & VarType)
+            if (leftTy.type.test(VarType) || leftTy.type.test(QObjectType) || rightTy.type.test(VarType) || rightTy.type.test(QObjectType))
                 _ty.type = VarType;
-            else if (leftTy.type & StringType || rightTy.type & StringType)
+            else if (leftTy.type.test(StringType) || rightTy.type.test(StringType))
                 _ty.type = StringType;
             else if (leftTy.type != UnknownType && rightTy.type != UnknownType)
                 _ty.type = DoubleType;
@@ -1574,14 +1795,13 @@ protected:
     }
 
     virtual void visitMember(Member *e) {
-        if (e->type == Member::MemberOfQObject
-            && !e->property->isEnum() // Enums need to go through run-time getters/setters to ensure correct string handling.
-           ) {
-            _ty = TypingResult(irTypeFromPropertyType(e->property->propType));
-            return;
-        }
         _ty = run(e->base);
-        _ty.type = VarType;
+
+        if (_ty.fullyTyped && _ty.type.memberResolver.isValid()) {
+            MemberExpressionResolver &resolver = _ty.type.memberResolver;
+            _ty.type.type = resolver.resolveMember(qmlEngine, &resolver, e);
+        } else
+            _ty.type = VarType;
     }
 
     virtual void visitExp(Exp *s) { _ty = run(s->expr); }
@@ -1611,11 +1831,13 @@ protected:
                 _ty.fullyTyped = false;
                 break;
             }
-            _ty.type |= ty.type;
+            _ty.type.type |= ty.type.type;
             _ty.fullyTyped &= ty.fullyTyped;
+            if (_ty.type.test(QObjectType))
+                _ty.type.memberResolver.clear(); // ### TODO: find common ancestor meta-object
         }
 
-        switch (_ty.type) {
+        switch (_ty.type.type) {
         case UnknownType:
         case UndefinedType:
         case NullType:
@@ -1624,13 +1846,14 @@ protected:
         case UInt32Type:
         case DoubleType:
         case StringType:
+        case QObjectType:
         case VarType:
             // The type is not a combination of two or more types, so we're done.
             break;
 
         default:
             // There are multiple types involved, so:
-            if ((_ty.type & NumberType) && !(_ty.type & ~NumberType))
+            if (_ty.type.isNumber())
                 // The type is any combination of double/int32/uint32, but nothing else. So we can
                 // type it as double.
                 _ty.type = DoubleType;
@@ -1641,17 +1864,146 @@ protected:
 
         setType(s->targetTemp, _ty.type);
     }
+};
 
-    static int irTypeFromPropertyType(int propType)
+class ReverseInference
+{
+    const DefUsesCalculator &_defUses;
+    bool _variablesCanExcape;
+
+public:
+    ReverseInference(const DefUsesCalculator &defUses)
+        : _defUses(defUses)
+    {}
+
+    void run(Function *f)
     {
-        switch (propType) {
-        case QMetaType::Bool: return BoolType;
-        case QMetaType::Int: return SInt32Type;
-        case QMetaType::Double: return DoubleType;
-        case QMetaType::QString: return StringType;
-        default: break;
+        _variablesCanExcape = f->variablesCanEscape();
+
+        QTextStream os(stderr, QIODevice::WriteOnly);
+
+        QVector<UntypedTemp> knownOk;
+        QList<UntypedTemp> candidates = _defUses.defsUntyped();
+        while (!candidates.isEmpty()) {
+            UntypedTemp temp = candidates.last();
+            candidates.removeLast();
+
+            if (knownOk.contains(temp))
+                continue;
+
+            if (!isUsedAsInt32(temp, knownOk))
+                continue;
+
+            Stmt *s = _defUses.defStmt(temp);
+            Move *m = s->asMove();
+            if (!m)
+                continue;
+            Temp *target = m->target->asTemp();
+            if (!target || temp != UntypedTemp(*target) || target->type == SInt32Type)
+                continue;
+            if (Temp *t = m->source->asTemp()) {
+                candidates.append(*t);
+            } else if (m->source->asConvert()) {
+                break;
+            } else if (Binop *b = m->source->asBinop()) {
+                switch (b->op) {
+                case OpAdd:
+                    if (b->left->type & NumberType || b->right->type & NumberType)
+                        break;
+                    else
+                        continue;
+                case OpBitAnd:
+                case OpBitOr:
+                case OpBitXor:
+                case OpSub:
+                case OpMul:
+                case OpLShift:
+                case OpRShift:
+                case OpURShift:
+                    break;
+                default:
+                    continue;
+                }
+                if (Temp *lt = unescapableTemp(b->left, _variablesCanExcape))
+                    candidates.append(*lt);
+                if (Temp *rt = unescapableTemp(b->right, _variablesCanExcape))
+                    candidates.append(*rt);
+            } else if (Unop *u = m->source->asUnop()) {
+                if (u->op == OpCompl || u->op == OpUPlus) {
+                    if (Temp *t = unescapableTemp(u->expr, _variablesCanExcape))
+                        candidates.append(*t);
+                }
+            } else {
+                continue;
+            }
+
+            knownOk.append(temp);
         }
-        return VarType;
+
+        PropagateTempTypes propagator(_defUses);
+        foreach (const UntypedTemp &t, knownOk) {
+            propagator.run(t, SInt32Type);
+            if (Stmt *defStmt = _defUses.defStmt(t)) {
+                if (Move *m = defStmt->asMove()) {
+                    if (Convert *c = m->source->asConvert())
+                        c->type = SInt32Type;
+                    else if (Unop *u = m->source->asUnop())
+                        u->type = SInt32Type;
+                    else if (Binop *b = m->source->asBinop())
+                        b->type = SInt32Type;
+                }
+            }
+        }
+    }
+
+private:
+    bool isUsedAsInt32(const UntypedTemp &t, const QVector<UntypedTemp> &knownOk) const
+    {
+        QList<Stmt *> uses = _defUses.uses(t);
+        if (uses.isEmpty())
+            return false;
+
+        foreach (Stmt *use, uses) {
+            if (Move *m = use->asMove()) {
+                Temp *targetTemp = m->target->asTemp();
+
+                if (m->source->asTemp()) {
+                    if (!targetTemp || !knownOk.contains(*targetTemp))
+                        return false;
+                } else if (m->source->asConvert()) {
+                    continue;
+                } else if (Binop *b = m->source->asBinop()) {
+                    switch (b->op) {
+                    case OpAdd:
+                    case OpSub:
+                    case OpMul:
+                        if (!targetTemp || !knownOk.contains(*targetTemp))
+                            return false;
+                    case OpBitAnd:
+                    case OpBitOr:
+                    case OpBitXor:
+                    case OpRShift:
+                    case OpLShift:
+                    case OpURShift:
+                        continue;
+                    default:
+                        return false;
+                    }
+                } else if (Unop *u = m->source->asUnop()) {
+                    if (u->op == OpUPlus) {
+                        if (!targetTemp || !knownOk.contains(*targetTemp))
+                            return false;
+                    } else if (u->op != OpCompl) {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            } else
+                return false;
+        }
+
+        return true;
     }
 };
 
@@ -1884,12 +2236,8 @@ protected:
             }
         }
 
-        // Don't convert when writing to QObject properties. All sorts of extra behavior
-        // is defined when writing to them, for example resettable properties are reset
-        // when writing undefined to them, and an exception is thrown when they're missing
-        // a reset function.
         const Member *targetMember = s->target->asMember();
-        const bool inhibitConversion = targetMember && targetMember->type == Member::MemberOfQObject && targetMember->property;
+        const bool inhibitConversion = targetMember && targetMember->inhibitTypeConversionOnWrite;
 
         run(s->source, s->target->type, !inhibitConversion);
     }
@@ -1914,13 +2262,16 @@ void splitCriticalEdges(Function *f)
             for (int inIdx = 0, eInIdx = bb->in.size(); inIdx != eInIdx; ++inIdx) {
                 BasicBlock *inBB = bb->in[inIdx];
                 if (inBB->out.size() > 1) { // this should have been split!
+                    int newIndex = f->basicBlocks.last()->index + 1;
 #if defined(SHOW_SSA)
-                    qDebug() << "Splitting edge from block" << inBB->index << "to block" << bb->index;
+                    qDebug() << "Splitting edge from block" << inBB->index << "to block" << bb->index << "by introducing block" << newIndex;
 #endif
 
+                    BasicBlock *containingGroup = inBB->isGroupStart() ? inBB : inBB->containingGroup();
+
                     // create the basic block:
-                    BasicBlock *newBB = new BasicBlock(f, bb->containingGroup(), bb->catchBlock);
-                    newBB->index = f->basicBlocks.last()->index + 1;
+                    BasicBlock *newBB = new BasicBlock(f, containingGroup, bb->catchBlock);
+                    newBB->index = newIndex;
                     f->basicBlocks.append(newBB);
                     Jump *s = f->New<Jump>();
                     s->init(bb);
@@ -1956,84 +2307,153 @@ void splitCriticalEdges(Function *f)
     }
 }
 
-QHash<BasicBlock *, BasicBlock *> scheduleBlocks(Function *function, const DominatorTree &df)
+// High-level algorithm:
+//  0. start with the first node (the start node) of a function
+//  1. emit the node
+//  2. add all outgoing edges that are not yet emitted to the postponed stack
+//  3. When the postponed stack is empty, pop a stack from the loop stack. If that is empty too,
+//     we're done.
+//  4. pop a node from the postponed stack, and check if it can be scheduled:
+//     a. if all incoming edges are scheduled, go to 4.
+//     b. if an incoming edge is unscheduled, but it's a back-edge (an edge in a loop that jumps
+//        back to the start of the loop), ignore it
+//     c. if there is any unscheduled edge that is not a back-edge, ignore this node, and go to 4.
+//  5. if this node is the start of a loop, push the postponed stack on the loop stack.
+//  6. go back to 1.
+//
+// The postponing action in step 2 will put the node into its containing group. The case where this
+// is important is when a (labeled) continue or a (labeled) break statement occur in a loop: the
+// outgoing edge points to a node that is not part of the current loop (and possibly not of the
+// parent loop).
+//
+// Linear scan register allocation benefits greatly from short life-time intervals with few holes
+// (see for example section 4 (Lifetime Analysis) of [Wimmer1]). This algorithm makes sure that the
+// blocks of a group are scheduled together, with no non-loop blocks in between. This applies
+// recursively for nested loops. It also schedules groups of if-then-else-endif blocks together for
+// the smae reason.
+class BlockScheduler
 {
-    struct I {
-        const DominatorTree &df;
-        QHash<BasicBlock *, BasicBlock *> &startEndLoops;
-        QSet<BasicBlock *> visited;
-        QVector<BasicBlock *> &sequence;
-        BasicBlock *currentGroup;
-        QList<BasicBlock *> postponed;
+    Function *function;
+    const DominatorTree &dominatorTree;
 
-        I(const DominatorTree &df, QVector<BasicBlock *> &sequence,
-          QHash<BasicBlock *, BasicBlock *> &startEndLoops)
-            : df(df)
-            , startEndLoops(startEndLoops)
-            , sequence(sequence)
-            , currentGroup(0)
-        {}
+    struct WorkForGroup
+    {
+        BasicBlock *group;
+        QStack<BasicBlock *> postponed;
 
-        void DFS(BasicBlock *bb) {
-            Q_ASSERT(bb);
-            if (visited.contains(bb))
-                return;
-
-            if (bb->containingGroup() != currentGroup) {
-                postponed.append(bb);
-                return;
-            }
-            if (bb->isGroupStart())
-                currentGroup = bb;
-            else if (bb->in.size() > 1)
-                foreach (BasicBlock *inBB, bb->in)
-                    if (!visited.contains(inBB))
-                        return;
-
-            Q_ASSERT(df.immediateDominator(bb) == 0 || sequence.contains(df.immediateDominator(bb)));
-            layout(bb);
-            if (Stmt *terminator = bb->terminator()) {
-                if (Jump *j = terminator->asJump()) {
-                    Q_ASSERT(bb->out.size() == 1);
-                    DFS(j->target);
-                } else if (CJump *cj = terminator->asCJump()) {
-                    Q_ASSERT(bb->out.size() == 2);
-                    DFS(cj->iftrue);
-                    DFS(cj->iffalse);
-                } else if (terminator->asRet()) {
-                    Q_ASSERT(bb->out.size() == 0);
-                    // nothing to do.
-                } else {
-                    Q_UNREACHABLE();
-                }
-            } else {
-                Q_UNREACHABLE();
-            }
-
-            if (bb->isGroupStart()) {
-                currentGroup = bb->containingGroup();
-                startEndLoops.insert(bb, sequence.last());
-                QList<BasicBlock *> p = postponed;
-                foreach (BasicBlock *pBB, p)
-                    DFS(pBB);
-            }
-        }
-
-        void layout(BasicBlock *bb) {
-            sequence.append(bb);
-            visited.insert(bb);
-            postponed.removeAll(bb);
-        }
+        WorkForGroup(BasicBlock *group = 0): group(group) {}
     };
-
+    WorkForGroup currentGroup;
+    QStack<WorkForGroup> postponedGroups;
     QVector<BasicBlock *> sequence;
-    sequence.reserve(function->basicBlocks.size());
-    QHash<BasicBlock *, BasicBlock *> startEndLoops;
-    I(df, sequence, startEndLoops).DFS(function->basicBlocks.first());
-    qSwap(function->basicBlocks, sequence);
+    ProcessedBlocks emitted;
+    QHash<BasicBlock *, BasicBlock *> loopsStartEnd;
 
-    return startEndLoops;
-}
+    bool checkCandidate(BasicBlock *candidate)
+    {
+        Q_ASSERT(candidate->containingGroup() == currentGroup.group);
+
+        foreach (BasicBlock *in, candidate->in) {
+            if (emitted.alreadyProcessed(in))
+                continue;
+
+            // this is a loop, where there in -> candidate edge is the jump back to the top of the loop.
+            if (dominatorTree.dominates(candidate, in))
+                continue;
+
+            return false; // an incoming edge that is not yet emitted, and is not a back-edge
+        }
+
+        // postpone everything, and schedule the loop first.
+        if (candidate->isGroupStart()) {
+            postponedGroups.push(currentGroup);
+            currentGroup = WorkForGroup(candidate);
+        }
+
+        return true;
+    }
+
+    BasicBlock *pickNext()
+    {
+        while (true) {
+            while (currentGroup.postponed.isEmpty()) {
+                if (postponedGroups.isEmpty())
+                    return 0;
+                if (currentGroup.group) // record the first and the last node of a group
+                    loopsStartEnd.insert(currentGroup.group, sequence.last());
+                currentGroup = postponedGroups.pop();
+            }
+
+            BasicBlock *next = currentGroup.postponed.pop();
+            if (checkCandidate(next))
+                return next;
+        }
+
+        return 0;
+    }
+
+    void emitBlock(BasicBlock *bb)
+    {
+        if (emitted.alreadyProcessed(bb))
+            return;
+
+        sequence.append(bb);
+        emitted.markAsProcessed(bb);
+    }
+
+    void schedule(BasicBlock *functionEntryPoint)
+    {
+        BasicBlock *next = functionEntryPoint;
+
+        while (next) {
+            emitBlock(next);
+            for (int i = next->out.size(); i != 0; ) {
+                // postpone all outgoing edges, if they were not already processed
+                --i;
+                BasicBlock *out = next->out[i];
+                if (!emitted.alreadyProcessed(out))
+                    postpone(out);
+            }
+            next = pickNext();
+        }
+    }
+
+    void postpone(BasicBlock *bb)
+    {
+        if (currentGroup.group == bb->containingGroup()) {
+            currentGroup.postponed.append(bb);
+            return;
+        }
+
+        for (int i = postponedGroups.size(); i != 0; ) {
+            --i;
+            WorkForGroup &g = postponedGroups[i];
+            if (g.group == bb->containingGroup()) {
+                g.postponed.append(bb);
+                return;
+            }
+        }
+
+        Q_UNREACHABLE();
+    }
+
+public:
+    BlockScheduler(Function *function, const DominatorTree &dominatorTree)
+        : function(function)
+        , dominatorTree(dominatorTree)
+        , emitted(function->basicBlocks)
+    {}
+
+    QHash<BasicBlock *, BasicBlock *> go()
+    {
+        showMeTheCode(function);
+        schedule(function->basicBlocks.first());
+
+        Q_ASSERT(function->basicBlocks.size() == sequence.size());
+        function->basicBlocks = sequence;
+        return loopsStartEnd;
+    }
+};
 
 #ifndef QT_NO_DEBUG
 void checkCriticalEdges(QVector<BasicBlock *> basicBlocks) {
@@ -2259,22 +2679,6 @@ private:
     }
 };
 
-inline Temp *unescapableTemp(Expr *e, bool variablesCanEscape)
-{
-    Temp *t = e->asTemp();
-    if (!t)
-        return 0;
-
-    switch (t->kind) {
-    case Temp::VirtualRegister:
-        return t;
-    case Temp::Local:
-        return variablesCanEscape ? 0 : t;
-    default:
-        return 0;
-    }
-}
-
 namespace {
 /// This function removes the basic-block from the function's list, unlinks any uses and/or defs,
 /// and removes unreachable staements from the worklist, so that optimiseSSA won't consider them
@@ -2356,10 +2760,10 @@ bool tryOptimizingComparison(Expr *&expr)
     if (!b)
         return false;
     Const *leftConst = b->left->asConst();
-    if (!leftConst || leftConst->type == StringType || leftConst->type == VarType)
+    if (!leftConst || leftConst->type == StringType || leftConst->type == VarType || leftConst->type == QObjectType)
         return false;
     Const *rightConst = b->right->asConst();
-    if (!rightConst || rightConst->type == StringType || rightConst->type == VarType)
+    if (!rightConst || rightConst->type == StringType || rightConst->type == VarType || rightConst->type == QObjectType)
         return false;
 
     QV4::Primitive l = convertToValue(leftConst);
@@ -2494,6 +2898,26 @@ void optimizeSSA(Function *function, DefUsesCalculator &defUses)
                     }
                     continue;
                 }
+                if (Member *member = m->source->asMember()) {
+                    if (member->kind == Member::MemberOfEnum) {
+                        Const *c = function->New<Const>();
+                        const int enumValue = member->attachedPropertiesIdOrEnumValue;
+                        c->init(SInt32Type, enumValue);
+                        W += replaceUses(targetTemp, c);
+                        defUses.removeDef(*targetTemp);
+                        *ref[s] = 0;
+                        defUses.removeUse(s, *member->base->asTemp());
+                        continue;
+                    } else if (member->attachedPropertiesIdOrEnumValue != 0 && member->property && member->base->asTemp()) {
+                        // Attached properties have no dependency on their base. Isel doesn't
+                        // need it and we can eliminate the temp used to initialize it.
+                        defUses.removeUse(s, *member->base->asTemp());
+                        Const *c = function->New<Const>();
+                        c->init(SInt32Type, 0);
+                        member->base = c;
+                        continue;
+                    }
+                }
 
                 // copy propagation:
                 if (Temp *sourceTemp = unescapableTemp(m->source, variablesCanEscape)) {
@@ -2533,7 +2957,7 @@ void optimizeSSA(Function *function, DefUsesCalculator &defUses)
                                 doneSomething = true;
                                 break;
                             case OpUPlus:
-                                constOperand->type = DoubleType;
+                                constOperand->type = unop->type;
                                 doneSomething = true;
                                 break;
                             case OpCompl:
@@ -2566,14 +2990,41 @@ void optimizeSSA(Function *function, DefUsesCalculator &defUses)
                 }
 
                 if (Binop *binop = m->source->asBinop()) {
+                    Const *leftConst = binop->left->asConst();
+                    Const *rightConst = binop->right->asConst();
+
+                    { // Typical casts to int32:
+                        Expr *casted = 0;
+                        switch (binop->op) {
+                        case OpBitAnd:
+                            if (leftConst && !rightConst && leftConst->value == 0xffffffff)
+                                casted = rightConst;
+                            else if (!leftConst && rightConst && rightConst->value == 0xffffffff)
+                                casted = leftConst;
+                            break;
+                        case OpBitOr:
+                            if (leftConst && !rightConst && leftConst->value == 0)
+                                casted = rightConst;
+                            else if (!leftConst && rightConst && rightConst->value == 0)
+                                casted = leftConst;
+                            break;
+                        default:
+                            break;
+                        }
+                        if (casted) {
+                            Q_ASSERT(casted->type == SInt32Type);
+                            m->source = casted;
+                            W += m;
+                            continue;
+                        }
+                    }
+
                     // TODO: More constant binary expression evaluation
                     // TODO: If the result of the move is only used in one single cjump, then
                     //       inline the binop into the cjump.
-                    Const *leftConst = binop->left->asConst();
-                    if (!leftConst || leftConst->type == StringType || leftConst->type == VarType)
+                    if (!leftConst || leftConst->type == StringType || leftConst->type == VarType || leftConst->type == QObjectType)
                         continue;
-                    Const *rightConst = binop->right->asConst();
-                    if (!rightConst || rightConst->type == StringType || rightConst->type == VarType)
+                    if (!rightConst || rightConst->type == StringType || rightConst->type == VarType || rightConst->type == QObjectType)
                         continue;
 
                     QV4::Primitive lc = convertToValue(leftConst);
@@ -2957,7 +3408,7 @@ bool LifeTimeInterval::lessThanForTemp(const LifeTimeInterval &r1, const LifeTim
     return r1.temp() < r2.temp();
 }
 
-void Optimizer::run()
+void Optimizer::run(QQmlEnginePrivate *qmlEngine)
 {
 #if defined(SHOW_SSA)
     qout << "##### NOW IN FUNCTION " << (function->name ? qPrintable(*function->name) : "anonymous!")
@@ -2976,10 +3427,9 @@ void Optimizer::run()
 //    showMeTheCode(function);
 
     static bool doSSA = qgetenv("QV4_NO_SSA").isEmpty();
-    static bool doOpt = qgetenv("QV4_NO_OPT").isEmpty();
 
     if (!function->hasTry && !function->hasWith && !function->module->debugMode && doSSA) {
-//        qout << "SSA for " << *function->name << endl;
+//        qout << "SSA for " << (function->name ? qPrintable(*function->name) : "<anonymous>") << endl;
 //        qout << "Starting edge splitting..." << endl;
         splitCriticalEdges(function);
 //        showMeTheCode(function);
@@ -2999,13 +3449,18 @@ void Optimizer::run()
 //        showMeTheCode(function);
 
 //        qout << "Running type inference..." << endl;
-        TypeInference(defUses).run(function);
+        TypeInference(qmlEngine, defUses).run(function);
+//        showMeTheCode(function);
+
+//        qout << "Doing reverse inference..." << endl;
+        ReverseInference(defUses).run(function);
 //        showMeTheCode(function);
 
 //        qout << "Doing type propagation..." << endl;
         TypePropagation(defUses).run(function);
 //        showMeTheCode(function);
 
+        static bool doOpt = qgetenv("QV4_NO_OPT").isEmpty();
         if (doOpt) {
 //            qout << "Running SSA optimization..." << endl;
             optimizeSSA(function, defUses);
@@ -3021,11 +3476,11 @@ void Optimizer::run()
         // block scheduling, so remove those now.
 //        qout << "Cleaning up unreachable basic blocks..." << endl;
         cleanupBasicBlocks(function, false);
-//        showMeTheCode(function);
+        showMeTheCode(function);
 
 //        qout << "Doing block scheduling..." << endl;
-        startEndLoops = scheduleBlocks(function, df);
-//        showMeTheCode(function);
+        startEndLoops = BlockScheduler(function, df).go();
+        showMeTheCode(function);
 
 #ifndef QT_NO_DEBUG
         checkCriticalEdges(function->basicBlocks);
@@ -3291,3 +3746,7 @@ MoveMapping::Action MoveMapping::schedule(const Move &m, QList<Move> &todo, QLis
     output.append(m);
     return NormalMove;
 }
+
+// References:
+//  [Wimmer1] C. Wimmer and M. Franz. Linear Scan Register Allocation on SSA Form. In Proceedings of
+//            CGO’10, ACM Press, 2010

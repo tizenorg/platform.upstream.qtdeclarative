@@ -320,6 +320,10 @@ QV4::ReturnedValue VME::run(QV4::ExecutionContext *context, const uchar *code,
         STOREVALUE(instr.result, __qmljs_get_qobject_property(context, VALUEPTR(instr.base), instr.propertyIndex, instr.captureRequired));
     MOTH_END_INSTR(LoadQObjectProperty)
 
+    MOTH_BEGIN_INSTR(LoadAttachedQObjectProperty)
+        STOREVALUE(instr.result, __qmljs_get_attached_property(context, instr.attachedPropertiesId, instr.propertyIndex));
+    MOTH_END_INSTR(LoadAttachedQObjectProperty)
+
     MOTH_BEGIN_INSTR(Push)
         TRACE(inline, "stack size: %u", instr.value);
         stackSize = instr.value;
@@ -657,9 +661,9 @@ QV4::ReturnedValue VME::run(QV4::ExecutionContext *context, const uchar *code,
         VALUE(instr.result) = context->callData->thisObject;
     MOTH_END_INSTR(LoadThis)
 
-    MOTH_BEGIN_INSTR(LoadQmlIdObject)
-        VALUE(instr.result) = __qmljs_get_id_object(static_cast<QV4::NoThrowContext*>(context), instr.id);
-    MOTH_END_INSTR(LoadQmlIdObject)
+    MOTH_BEGIN_INSTR(LoadQmlIdArray)
+        VALUE(instr.result) = __qmljs_get_id_array(static_cast<QV4::NoThrowContext*>(context));
+    MOTH_END_INSTR(LoadQmlIdArray)
 
     MOTH_BEGIN_INSTR(LoadQmlImportedScripts)
         VALUE(instr.result) = __qmljs_get_imported_scripts(static_cast<QV4::NoThrowContext*>(context));
@@ -672,6 +676,10 @@ QV4::ReturnedValue VME::run(QV4::ExecutionContext *context, const uchar *code,
     MOTH_BEGIN_INSTR(LoadQmlScopeObject)
         VALUE(instr.result) = __qmljs_get_scope_object(static_cast<QV4::NoThrowContext*>(context));
     MOTH_END_INSTR(LoadScopeObject)
+
+    MOTH_BEGIN_INSTR(LoadQmlSingleton)
+        VALUE(instr.result) = __qmljs_get_qml_singleton(static_cast<QV4::NoThrowContext*>(context), runtimeStrings[instr.name]);
+    MOTH_END_INSTR(LoadQmlSingleton)
 
 #ifdef MOTH_THREADED_INTERPRETER
     // nothing to do

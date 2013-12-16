@@ -66,7 +66,7 @@
 #include <private/qv4debugservice_p.h>
 #include <private/qdebugmessageservice_p.h>
 #include "qqmlincubator.h"
-#include "qqmlabstracturlinterceptor_p.h"
+#include "qqmlabstracturlinterceptor.h"
 #include <private/qv8profilerservice_p.h>
 #include <private/qqmlboundsignal_p.h>
 
@@ -101,6 +101,9 @@
 
 #ifdef Q_OS_WIN // for %APPDATA%
 #include <qt_windows.h>
+#  if !defined(Q_OS_WINCE) && !defined(Q_OS_WINRT)
+#    include <shlobj.h>
+#  endif
 #include <qlibrary.h>
 #include <windows.h>
 
@@ -615,12 +618,18 @@ void QQmlPrivate::qdeclarativeelement_destructor(QObject *o)
 
 void QQmlData::destroyed(QAbstractDeclarativeData *d, QObject *o)
 {
-    static_cast<QQmlData *>(d)->destroyed(o);
+    QQmlData *ddata = static_cast<QQmlData *>(d);
+    if (ddata->ownedByQml1)
+        return;
+    ddata->destroyed(o);
 }
 
 void QQmlData::parentChanged(QAbstractDeclarativeData *d, QObject *o, QObject *p)
 {
-    static_cast<QQmlData *>(d)->parentChanged(o, p);
+    QQmlData *ddata = static_cast<QQmlData *>(d);
+    if (ddata->ownedByQml1)
+        return;
+    ddata->parentChanged(o, p);
 }
 
 class QQmlThreadNotifierProxyObject : public QObject
@@ -649,6 +658,7 @@ void QQmlData::signalEmitted(QAbstractDeclarativeData *, QObject *object, int in
 {
     QQmlData *ddata = QQmlData::get(object, false);
     if (!ddata) return; // Probably being deleted
+    if (ddata->ownedByQml1) return;
 
     // In general, QML only supports QObject's that live on the same thread as the QQmlEngine
     // that they're exposed to.  However, to make writing "worker objects" that calculate data
@@ -706,12 +716,18 @@ void QQmlData::signalEmitted(QAbstractDeclarativeData *, QObject *object, int in
 
 int QQmlData::receivers(QAbstractDeclarativeData *d, const QObject *, int index)
 {
-    return static_cast<QQmlData *>(d)->endpointCount(index);
+    QQmlData *ddata = static_cast<QQmlData *>(d);
+    if (ddata->ownedByQml1)
+        return 0;
+    return ddata->endpointCount(index);
 }
 
 bool QQmlData::isSignalConnected(QAbstractDeclarativeData *d, const QObject *, int index)
 {
-    return static_cast<QQmlData *>(d)->signalHasEndpoint(index);
+    QQmlData *ddata = static_cast<QQmlData *>(d);
+    if (ddata->ownedByQml1)
+        return false;
+    return ddata->signalHasEndpoint(index);
 }
 
 int QQmlData::endpointCount(int index)
@@ -1326,14 +1342,6 @@ void qmlExecuteDeferred(QObject *object)
     QQmlData *data = QQmlData::get(object);
 
     if (data && data->deferredData && !data->wasDeleted(object)) {
-        QQmlObjectCreatingProfiler prof;
-        if (prof.enabled) {
-            QQmlType *type = QQmlMetaType::qmlType(object->metaObject());
-            prof.setTypeName(type ? type->qmlTypeName()
-                                  : QString::fromUtf8(object->metaObject()->className()));
-            if (data->outerContext)
-                prof.setLocation(data->outerContext->url, data->lineNumber, data->columnNumber);
-        }
         QQmlEnginePrivate *ep = QQmlEnginePrivate::get(data->context->engine);
 
         QQmlComponentPrivate::ConstructionState state;
@@ -1719,6 +1727,16 @@ void QQmlData::clearPendingBindingBit(int coreIndex)
 void QQmlData::setPendingBindingBit(QObject *obj, int coreIndex)
 {
     QQmlData_setBit(this, obj, coreIndex * 2 + 1);
+}
+
+void QQmlData::ensurePropertyCache(QQmlEngine *engine, QObject *object)
+{
+    Q_ASSERT(engine);
+    QQmlData *ddata = QQmlData::get(object, /*create*/true);
+    if (ddata->propertyCache)
+        return;
+    ddata->propertyCache = QQmlEnginePrivate::get(engine)->cache(object);
+    if (ddata->propertyCache) ddata->propertyCache->addref();
 }
 
 void QQmlEnginePrivate::sendQuit()
@@ -2270,6 +2288,28 @@ bool QQmlEnginePrivate::isScriptLoaded(const QUrl &url) const
     return typeLoader.isScriptLoaded(url);
 }
 
+#if defined(Q_OS_WIN) && !defined(Q_OS_WINCE) && !defined(Q_OS_WINRT)
+// Normalize a file name using Shell API. As opposed to converting it
+// to a short 8.3 name and back, this also works for drives where 8.3 notation
+// is disabled (see 8dot3name options of fsutil.exe).
+static inline QString shellNormalizeFileName(const QString &name)
+{
+    const QString nativeSeparatorName(QDir::toNativeSeparators(name));
+    const LPCTSTR nameC = reinterpret_cast<LPCTSTR>(nativeSeparatorName.utf16());
+    PIDLIST_ABSOLUTE file;
+    if (FAILED(SHParseDisplayName(nameC, NULL, &file, 0, NULL)))
+        return name;
+    TCHAR buffer[MAX_PATH];
+    if (!SHGetPathFromIDList(file, buffer))
+        return name;
+    QString canonicalName = QString::fromWCharArray(buffer);
+    // Upper case drive letter
+    if (canonicalName.size() > 2 && canonicalName.at(1) == QLatin1Char(':'))
+        canonicalName[0] = canonicalName.at(0).toUpper();
+    return QDir::cleanPath(canonicalName);
+}
+#endif // Q_OS_WIN && !Q_OS_WINCE && !Q_OS_WINRT
+
 bool QQml_isFileCaseCorrect(const QString &fileName, int lengthIn /* = -1 */)
 {
 #if defined(Q_OS_MAC) || defined(Q_OS_WIN)
@@ -2279,14 +2319,7 @@ bool QQml_isFileCaseCorrect(const QString &fileName, int lengthIn /* = -1 */)
 #if defined(Q_OS_MAC) || defined(Q_OS_WINCE) || defined(Q_OS_WINRT)
     const QString canonical = info.canonicalFilePath();
 #elif defined(Q_OS_WIN)
-    wchar_t buffer[1024];
-
-    DWORD rv = ::GetShortPathName((wchar_t*)absolute.utf16(), buffer, 1024);
-    if (rv == 0 || rv >= 1024) return true;
-    rv = ::GetLongPathName(buffer, buffer, 1024);
-    if (rv == 0 || rv >= 1024) return true;
-
-    const QString canonical = QString::fromWCharArray(buffer);
+    const QString canonical = shellNormalizeFileName(absolute);
 #endif
 
     const int absoluteLength = absolute.length();

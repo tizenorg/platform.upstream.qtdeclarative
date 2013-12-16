@@ -340,6 +340,7 @@ QSGRenderContext::QSGRenderContext(QSGContext *context)
     , m_depthStencilManager(0)
     , m_distanceFieldCacheManager(0)
     , m_brokenIBOs(false)
+    , m_serializedRender(false)
 {
 }
 
@@ -348,14 +349,22 @@ QSGRenderContext::~QSGRenderContext()
     invalidate();
 }
 
+static QBasicMutex qsg_framerender_mutex;
+
 void QSGRenderContext::renderNextFrame(QSGRenderer *renderer, GLuint fboId)
 {
+    if (m_serializedRender)
+        qsg_framerender_mutex.lock();
+
     if (fboId) {
         QSGBindableFboId bindable(fboId);
         renderer->renderScene(bindable);
     } else {
         renderer->renderScene();
     }
+
+    if (m_serializedRender)
+        qsg_framerender_mutex.unlock();
 
 }
 
@@ -441,6 +450,11 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
 #if defined(Q_OS_LINUX) && !defined(Q_OS_LINUX_TIZEN_SIMULATOR)
     const char *vendor = (const char *) glGetString(GL_VENDOR);
     if (strstr(vendor, "nouveau"))
+        m_brokenIBOs = true;
+    const char *renderer = (const char *) glGetString(GL_RENDERER);
+    if (strstr(renderer, "llvmpipe"))
+        m_serializedRender = true;
+    if (strstr(vendor, "Hisilicon Technologies") && strstr(renderer, "Immersion.16"))
         m_brokenIBOs = true;
 #endif
 

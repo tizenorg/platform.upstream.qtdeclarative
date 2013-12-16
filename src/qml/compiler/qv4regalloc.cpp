@@ -338,9 +338,8 @@ protected: // IRDecoder
         addDef(temp);
     }
 
-    virtual void loadQmlIdObject(int id, V4IR::Temp *temp)
+    virtual void loadQmlIdArray(V4IR::Temp *temp)
     {
-        Q_UNUSED(id);
         addDef(temp);
         addCall();
     }
@@ -358,6 +357,14 @@ protected: // IRDecoder
     }
 
     virtual void loadQmlScopeObject(Temp *temp)
+    {
+        Q_UNUSED(temp);
+
+        addDef(temp);
+        addCall();
+    }
+
+    virtual void loadQmlSingleton(const QString &/*name*/, Temp *temp)
     {
         Q_UNUSED(temp);
 
@@ -428,7 +435,7 @@ protected: // IRDecoder
         addCall();
     }
 
-    virtual void getQObjectProperty(V4IR::Expr *base, int /*propertyIndex*/, bool /*captureRequired*/, V4IR::Temp *target)
+    virtual void getQObjectProperty(V4IR::Expr *base, int /*propertyIndex*/, bool /*captureRequired*/, int /*attachedPropertiesId*/, V4IR::Temp *target)
     {
         addDef(target);
         addUses(base->asTemp(), Use::CouldHaveRegister);
@@ -511,8 +518,15 @@ protected: // IRDecoder
                     || (oper >= OpGt && oper <= OpStrictNotEqual)) {
                 needsCall = false;
             }
-        } if (oper == OpBitAnd || oper == OpBitOr || oper == OpBitXor || oper == OpLShift || oper == OpRShift || oper == OpURShift) {
+        } else if (oper == OpBitAnd || oper == OpBitOr || oper == OpBitXor || oper == OpLShift || oper == OpRShift || oper == OpURShift) {
             needsCall = false;
+        } else if (oper == OpAdd
+                   || oper == OpMul
+                   ||
+                   oper == OpSub
+                   ) {
+            if (leftSource->type == SInt32Type && rightSource->type == SInt32Type)
+                needsCall = false;
         }
 
         addDef(target);
@@ -589,6 +603,7 @@ private:
         Q_ASSERT(!_defs.contains(*t));
         bool canHaveReg = true;
         switch (t->type) {
+        case QObjectType:
         case VarType:
         case StringType:
         case UndefinedType:
@@ -889,9 +904,9 @@ private:
                 }
             }
             if (!moveFrom) {
-                Q_ASSERT(!_info->isPhiTarget(it.temp()) || it.isSplitFromInterval() || lifeTimeHole);
                 Q_UNUSED(lifeTimeHole);
 #if !defined(QT_NO_DEBUG)
+                Q_ASSERT(!_info->isPhiTarget(it.temp()) || it.isSplitFromInterval() || lifeTimeHole);
                 if (_info->def(it.temp()) != successorStart && !it.isSplitFromInterval()) {
                     const int successorEnd = successor->statements.last()->id;
                     const int idx = successor->in.indexOf(predecessor);

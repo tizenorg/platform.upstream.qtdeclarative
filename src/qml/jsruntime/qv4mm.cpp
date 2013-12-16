@@ -298,11 +298,11 @@ Managed *MemoryManager::alloc(std::size_t size)
         uint shift = ++m_d->nChunks[pos];
         if (shift > 10)
             shift = 10;
-        std::size_t allocSize = CHUNK_SIZE*(1 << shift);
+        std::size_t allocSize = CHUNK_SIZE*(size_t(1) << shift);
         allocSize = roundUpToMultipleOf(WTF::pageSize(), allocSize);
         Data::Chunk allocation;
         allocation.memory = PageAllocation::allocate(allocSize, OSAllocator::JSGCHeapPages);
-        allocation.chunkSize = size;
+        allocation.chunkSize = int(size);
         m_d->heapChunks.append(allocation);
         std::sort(m_d->heapChunks.begin(), m_d->heapChunks.end());
         char *chunk = (char *)allocation.memory.base();
@@ -320,8 +320,9 @@ Managed *MemoryManager::alloc(std::size_t size)
         }
         *last = 0;
         m = m_d->smallItems[pos];
-        m_d->availableItems[pos] += allocation.memory.size()/size - 1;
-        m_d->totalItems += allocation.memory.size()/size - 1;
+        const size_t increase = allocation.memory.size()/size - 1;
+        m_d->availableItems[pos] += uint(increase);
+        m_d->totalItems += int(increase);
 #ifdef V4_USE_VALGRIND
         VALGRIND_MAKE_MEM_NOACCESS(allocation.memory, allocation.chunkSize);
 #endif
@@ -423,8 +424,8 @@ void MemoryManager::mark()
     // now that we marked all roots, start marking recursively and popping from the mark stack
     while (m_d->engine->jsStackTop > markBase) {
         Managed *m = m_d->engine->popForGC();
-        Q_ASSERT (m->vtbl->markObjects);
-        m->vtbl->markObjects(m, m_d->engine);
+        Q_ASSERT (m->internalClass->vtable->markObjects);
+        m->internalClass->vtable->markObjects(m, m_d->engine);
     }
 }
 
@@ -515,9 +516,9 @@ void MemoryManager::sweep(char *chunkStart, std::size_t chunkSize, size_t size, 
 #ifdef V4_USE_VALGRIND
                 VALGRIND_ENABLE_ERROR_REPORTING;
 #endif
-                if (m->vtbl->collectDeletables)
-                    m->vtbl->collectDeletables(m, deletable);
-                m->vtbl->destroy(m);
+                if (m->internalClass->vtable->collectDeletables)
+                    m->internalClass->vtable->collectDeletables(m, deletable);
+                m->internalClass->vtable->destroy(m);
 
                 m->setNextFree(*f);
 #ifdef V4_USE_VALGRIND

@@ -68,7 +68,7 @@ using namespace QV4;
 CompilationUnit::~CompilationUnit()
 {
     foreach (Function *f, runtimeFunctions)
-        engine->allFunctions.remove(reinterpret_cast<quintptr>(f->codePtr));
+        engine->allFunctions.remove(reinterpret_cast<quintptr>(f->code));
 }
 
 void CompilationUnit::linkBackendToEngine(ExecutionEngine *engine)
@@ -85,7 +85,7 @@ void CompilationUnit::linkBackendToEngine(ExecutionEngine *engine)
     }
 
     foreach (Function *f, runtimeFunctions)
-        engine->allFunctions.insert(reinterpret_cast<quintptr>(f->codePtr), f);
+        engine->allFunctions.insert(reinterpret_cast<quintptr>(f->code), f);
 }
 
 QV4::ExecutableAllocator::ChunkOfPages *CompilationUnit::chunkForFunction(int functionIndex)
@@ -539,10 +539,11 @@ JSC::MacroAssemblerCodeRef Assembler::link(int *codeSize)
     return codeRef;
 }
 
-InstructionSelection::InstructionSelection(QV4::ExecutableAllocator *execAllocator, V4IR::Module *module, Compiler::JSUnitGenerator *jsGenerator)
+InstructionSelection::InstructionSelection(QQmlEnginePrivate *qmlEngine, QV4::ExecutableAllocator *execAllocator, V4IR::Module *module, Compiler::JSUnitGenerator *jsGenerator)
     : EvalInstructionSelection(execAllocator, module, jsGenerator)
     , _block(0)
     , _as(0)
+    , qmlEngine(qmlEngine)
 {
     compilationUnit = new CompilationUnit;
     compilationUnit->codeRefs.resize(module->functions.size());
@@ -561,7 +562,7 @@ void InstructionSelection::run(int functionIndex)
     qSwap(_function, function);
 
     V4IR::Optimizer opt(_function);
-    opt.run();
+    opt.run(qmlEngine);
 
 #if (CPU(X86_64) && (OS(MAC_OS_X) || OS(LINUX))) || (CPU(X86) && OS(LINUX))
     static const bool withRegisterAllocator = qgetenv("QV4_NO_REGALLOC").isEmpty();
@@ -879,9 +880,9 @@ void InstructionSelection::loadThisObject(V4IR::Temp *temp)
 #endif
 }
 
-void InstructionSelection::loadQmlIdObject(int id, V4IR::Temp *temp)
+void InstructionSelection::loadQmlIdArray(V4IR::Temp *temp)
 {
-    generateFunctionCall(temp, __qmljs_get_id_object, Assembler::ContextRegister, Assembler::TrustedImm32(id));
+    generateFunctionCall(temp, __qmljs_get_id_array, Assembler::ContextRegister);
 }
 
 void InstructionSelection::loadQmlImportedScripts(V4IR::Temp *temp)
@@ -897,6 +898,11 @@ void InstructionSelection::loadQmlContextObject(V4IR::Temp *temp)
 void InstructionSelection::loadQmlScopeObject(V4IR::Temp *temp)
 {
     generateFunctionCall(temp, __qmljs_get_scope_object, Assembler::ContextRegister);
+}
+
+void InstructionSelection::loadQmlSingleton(const QString &name, V4IR::Temp *temp)
+{
+    generateFunctionCall(temp, __qmljs_get_qml_singleton, Assembler::ContextRegister, Assembler::PointerToString(name));
 }
 
 void InstructionSelection::loadConst(V4IR::Const *sourceConst, V4IR::Temp *targetTemp)
@@ -977,10 +983,13 @@ void InstructionSelection::getProperty(V4IR::Expr *base, const QString &name, V4
     }
 }
 
-void InstructionSelection::getQObjectProperty(V4IR::Expr *base, int propertyIndex, bool captureRequired, V4IR::Temp *target)
+void InstructionSelection::getQObjectProperty(V4IR::Expr *base, int propertyIndex, bool captureRequired, int attachedPropertiesId, V4IR::Temp *target)
 {
-    generateFunctionCall(target, __qmljs_get_qobject_property, Assembler::ContextRegister, Assembler::PointerToValue(base), Assembler::TrustedImm32(propertyIndex),
-                         Assembler::TrustedImm32(captureRequired));
+    if (attachedPropertiesId != 0)
+        generateFunctionCall(target, __qmljs_get_attached_property, Assembler::ContextRegister, Assembler::TrustedImm32(attachedPropertiesId), Assembler::TrustedImm32(propertyIndex));
+    else
+        generateFunctionCall(target, __qmljs_get_qobject_property, Assembler::ContextRegister, Assembler::PointerToValue(base), Assembler::TrustedImm32(propertyIndex),
+                             Assembler::TrustedImm32(captureRequired));
 }
 
 void InstructionSelection::setProperty(V4IR::Expr *source, V4IR::Expr *targetBase,
@@ -1022,10 +1031,13 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
         _as->and32(Assembler::TrustedImm32(QV4::Managed::SimpleArray), Assembler::ReturnValueRegister);
         Assembler::Jump notSimple = _as->branch32(Assembler::Equal, Assembler::ReturnValueRegister, Assembler::TrustedImm32(0));
 
+        bool needNegativeCheck = false;
         Assembler::Jump fallback, fallback2;
         if (tindex->kind == V4IR::Temp::PhysicalRegister) {
             if (tindex->type == V4IR::SInt32Type) {
+                fallback = _as->branch32(Assembler::LessThan, (Assembler::RegisterID)tindex->index, Assembler::TrustedImm32(0));
                 _as->move((Assembler::RegisterID) tindex->index, Assembler::ScratchRegister);
+                needNegativeCheck = true;
             } else {
                 // double, convert and check if it's a int
                 fallback2 = _as->branchTruncateDoubleToUint32((Assembler::FPRegisterID) tindex->index, Assembler::ScratchRegister);
@@ -1051,13 +1063,17 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
 
             isInteger.link(_as);
             _as->or32(Assembler::TrustedImm32(0), Assembler::ScratchRegister);
+            needNegativeCheck = true;
         }
 
         // get data, ScratchRegister holds index
         addr = _as->loadTempAddress(Assembler::ReturnValueRegister, tbase);
         _as->load64(addr, Assembler::ReturnValueRegister);
         Address arrayDataLen(Assembler::ReturnValueRegister, qOffsetOf(Object, arrayDataLen));
-        Assembler::Jump outOfRange = _as->branch32(Assembler::GreaterThanOrEqual, Assembler::ScratchRegister, arrayDataLen);
+        Assembler::Jump outOfRange;
+        if (needNegativeCheck)
+            outOfRange = _as->branch32(Assembler::LessThan, Assembler::ScratchRegister, Assembler::TrustedImm32(0));
+        Assembler::Jump outOfRange2 = _as->branch32(Assembler::GreaterThanOrEqual, Assembler::ScratchRegister, arrayDataLen);
         Address arrayData(Assembler::ReturnValueRegister, qOffsetOf(Object, arrayData));
         _as->load64(arrayData, Assembler::ReturnValueRegister);
         Q_ASSERT(sizeof(Property) == (1<<4));
@@ -1075,7 +1091,9 @@ void InstructionSelection::getElement(V4IR::Expr *base, V4IR::Expr *index, V4IR:
         Assembler::Jump done = _as->jump();
 
         emptyValue.link(_as);
-        outOfRange.link(_as);
+        if (outOfRange.isSet())
+            outOfRange.link(_as);
+        outOfRange2.link(_as);
         if (fallback.isSet())
             fallback.link(_as);
         if (fallback2.isSet())
@@ -2476,11 +2494,10 @@ bool InstructionSelection::int32Binop(V4IR::AluOp oper, V4IR::Expr *leftSource,
         else
             targetReg = Assembler::ReturnValueRegister;
 
-        _as->move(_as->toInt32Register(leftSource, targetReg), targetReg);
-        Assembler::RegisterID rReg = _as->toInt32Register(rightSource, Assembler::ScratchRegister);
-        _as->and32(rReg, targetReg);
-        if (Assembler::ReturnValueRegister == targetReg)
-            _as->storeInt32(targetReg, target);
+        _as->and32(_as->toInt32Register(leftSource, targetReg),
+                   _as->toInt32Register(rightSource, Assembler::ScratchRegister),
+                   targetReg);
+        _as->storeInt32(targetReg, target);
     } return true;
     case V4IR::OpBitOr: {
         Q_ASSERT(rightSource->type == V4IR::SInt32Type);
@@ -2497,11 +2514,10 @@ bool InstructionSelection::int32Binop(V4IR::AluOp oper, V4IR::Expr *leftSource,
         else
             targetReg = Assembler::ReturnValueRegister;
 
-        _as->move(_as->toInt32Register(leftSource, targetReg), targetReg);
-        Assembler::RegisterID rReg = _as->toInt32Register(rightSource, Assembler::ScratchRegister);
-        _as->or32(rReg, targetReg);
-        if (Assembler::ReturnValueRegister == targetReg)
-            _as->storeInt32(targetReg, target);
+        _as->or32(_as->toInt32Register(leftSource, targetReg),
+                  _as->toInt32Register(rightSource, Assembler::ScratchRegister),
+                  targetReg);
+        _as->storeInt32(targetReg, target);
     } return true;
     case V4IR::OpBitXor: {
         Q_ASSERT(rightSource->type == V4IR::SInt32Type);
@@ -2518,32 +2534,41 @@ bool InstructionSelection::int32Binop(V4IR::AluOp oper, V4IR::Expr *leftSource,
         else
             targetReg = Assembler::ReturnValueRegister;
 
-        _as->move(_as->toInt32Register(leftSource, targetReg), targetReg);
-        Assembler::RegisterID rReg = _as->toInt32Register(rightSource, Assembler::ScratchRegister);
-        _as->xor32(rReg, targetReg);
-        if (Assembler::ReturnValueRegister == targetReg)
-            _as->storeInt32(targetReg, target);
+        _as->xor32(_as->toInt32Register(leftSource, targetReg),
+                   _as->toInt32Register(rightSource, Assembler::ScratchRegister),
+                   targetReg);
+        _as->storeInt32(targetReg, target);
     } return true;
-    case V4IR::OpLShift:
+    case V4IR::OpLShift: {
         Q_ASSERT(rightSource->type == V4IR::SInt32Type);
-        _as->move(_as->toInt32Register(leftSource, Assembler::ReturnValueRegister),
-                  Assembler::ReturnValueRegister);
+        Assembler::RegisterID targetReg;
+        if (target->kind == V4IR::Temp::PhysicalRegister)
+            targetReg = (Assembler::RegisterID) target->index;
+        else
+            targetReg = Assembler::ReturnValueRegister;
+
         _as->move(_as->toInt32Register(rightSource, Assembler::ScratchRegister),
                   Assembler::ScratchRegister);
         _as->and32(Assembler::TrustedImm32(0x1f), Assembler::ScratchRegister); // TODO: for constants, do this in the IR
-        _as->lshift32(Assembler::ScratchRegister, Assembler::ReturnValueRegister);
+        _as->lshift32(_as->toInt32Register(leftSource, targetReg), Assembler::ScratchRegister,
+                      Assembler::ReturnValueRegister);
         _as->storeInt32(Assembler::ReturnValueRegister, target);
-        return true;
-    case V4IR::OpRShift:
+    } return true;
+    case V4IR::OpRShift: {
         Q_ASSERT(rightSource->type == V4IR::SInt32Type);
-        _as->move(_as->toInt32Register(leftSource, Assembler::ReturnValueRegister),
-                  Assembler::ReturnValueRegister);
+        Assembler::RegisterID targetReg;
+        if (target->kind == V4IR::Temp::PhysicalRegister)
+            targetReg = (Assembler::RegisterID) target->index;
+        else
+            targetReg = Assembler::ReturnValueRegister;
+
         _as->move(_as->toInt32Register(rightSource, Assembler::ScratchRegister),
                   Assembler::ScratchRegister);
         _as->and32(Assembler::TrustedImm32(0x1f), Assembler::ScratchRegister); // TODO: for constants, do this in the IR
-        _as->rshift32(Assembler::ScratchRegister, Assembler::ReturnValueRegister);
+        _as->rshift32(_as->toInt32Register(leftSource, targetReg), Assembler::ScratchRegister,
+                      Assembler::ReturnValueRegister);
         _as->storeInt32(Assembler::ReturnValueRegister, target);
-        return true;
+    } return true;
     case V4IR::OpURShift:
         Q_ASSERT(rightSource->type == V4IR::SInt32Type);
         _as->move(_as->toInt32Register(leftSource, Assembler::ReturnValueRegister),
@@ -2554,6 +2579,58 @@ bool InstructionSelection::int32Binop(V4IR::AluOp oper, V4IR::Expr *leftSource,
         _as->urshift32(Assembler::ScratchRegister, Assembler::ReturnValueRegister);
         _as->storeUInt32(Assembler::ReturnValueRegister, target);
         return true;
+    case V4IR::OpAdd: {
+        Q_ASSERT(rightSource->type == V4IR::SInt32Type);
+
+        Assembler::RegisterID targetReg;
+        if (target->kind == V4IR::Temp::PhysicalRegister)
+            targetReg = (Assembler::RegisterID) target->index;
+        else
+            targetReg = Assembler::ReturnValueRegister;
+
+        _as->add32(_as->toInt32Register(leftSource, targetReg),
+                   _as->toInt32Register(rightSource, Assembler::ScratchRegister),
+                   targetReg);
+        _as->storeInt32(targetReg, target);
+    } return true;
+    case V4IR::OpSub: {
+        Q_ASSERT(rightSource->type == V4IR::SInt32Type);
+
+        if (rightSource->asTemp() && rightSource->asTemp()->kind == V4IR::Temp::PhysicalRegister
+                && target->kind == V4IR::Temp::PhysicalRegister
+                && target->index == rightSource->asTemp()->index) {
+            Assembler::RegisterID targetReg = (Assembler::RegisterID) target->index;
+            _as->move(targetReg, Assembler::ScratchRegister);
+            _as->move(_as->toInt32Register(leftSource, targetReg), targetReg);
+            _as->sub32(Assembler::ScratchRegister, targetReg);
+            _as->storeInt32(targetReg, target);
+            return true;
+        }
+
+        Assembler::RegisterID targetReg;
+        if (target->kind == V4IR::Temp::PhysicalRegister)
+            targetReg = (Assembler::RegisterID) target->index;
+        else
+            targetReg = Assembler::ReturnValueRegister;
+
+        _as->move(_as->toInt32Register(leftSource, targetReg), targetReg);
+        _as->sub32(_as->toInt32Register(rightSource, Assembler::ScratchRegister), targetReg);
+        _as->storeInt32(targetReg, target);
+    } return true;
+    case V4IR::OpMul: {
+        Q_ASSERT(rightSource->type == V4IR::SInt32Type);
+
+        Assembler::RegisterID targetReg;
+        if (target->kind == V4IR::Temp::PhysicalRegister)
+            targetReg = (Assembler::RegisterID) target->index;
+        else
+            targetReg = Assembler::ReturnValueRegister;
+
+        _as->mul32(_as->toInt32Register(leftSource, targetReg),
+                   _as->toInt32Register(rightSource, Assembler::ScratchRegister),
+                   targetReg);
+        _as->storeInt32(targetReg, target);
+    } return true;
     default:
         return false;
     }

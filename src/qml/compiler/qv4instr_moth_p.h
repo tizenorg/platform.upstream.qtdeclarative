@@ -67,6 +67,7 @@ QT_BEGIN_NAMESPACE
     F(SetLookup, setLookup) \
     F(StoreQObjectProperty, storeQObjectProperty) \
     F(LoadQObjectProperty, loadQObjectProperty) \
+    F(LoadAttachedQObjectProperty, loadAttachedQObjectProperty) \
     F(Push, push) \
     F(CallValue, callValue) \
     F(CallProperty, callProperty) \
@@ -126,10 +127,11 @@ QT_BEGIN_NAMESPACE
     F(MulNumberParams, mulNumberParams) \
     F(SubNumberParams, subNumberParams) \
     F(LoadThis, loadThis) \
-    F(LoadQmlIdObject, loadQmlIdObject) \
+    F(LoadQmlIdArray, loadQmlIdArray) \
     F(LoadQmlImportedScripts, loadQmlImportedScripts) \
     F(LoadQmlContextObject, loadQmlContextObject) \
-    F(LoadQmlScopeObject, loadQmlScopeObject)
+    F(LoadQmlScopeObject, loadQmlScopeObject) \
+    F(LoadQmlSingleton, loadQmlSingleton)
 
 #if defined(Q_CC_GNU) && (!defined(Q_CC_INTEL) || __INTEL_COMPILER >= 1200)
 #  define MOTH_THREADED_INTERPRETER
@@ -287,7 +289,14 @@ union Instr
         int propertyIndex;
         Param base;
         Param result;
+        int attachedPropertiesId;
         bool captureRequired;
+    };
+    struct instr_loadAttachedQObjectProperty {
+        MOTH_INSTR_HEADER
+        int propertyIndex;
+        Param result;
+        int attachedPropertiesId;
     };
     struct instr_storeProperty {
         MOTH_INSTR_HEADER
@@ -654,10 +663,9 @@ union Instr
         MOTH_INSTR_HEADER
         Param result;
     };
-    struct instr_loadQmlIdObject {
+    struct instr_loadQmlIdArray {
         MOTH_INSTR_HEADER
         Param result;
-        int id;
     };
     struct instr_loadQmlImportedScripts {
         MOTH_INSTR_HEADER
@@ -670,6 +678,11 @@ union Instr
     struct instr_loadQmlScopeObject {
         MOTH_INSTR_HEADER
         Param result;
+    };
+    struct instr_loadQmlSingleton {
+        MOTH_INSTR_HEADER
+        Param result;
+        int name;
     };
 
     instr_common common;
@@ -687,6 +700,7 @@ union Instr
     instr_loadProperty loadProperty;
     instr_getLookup getLookup;
     instr_loadQObjectProperty loadQObjectProperty;
+    instr_loadAttachedQObjectProperty loadAttachedQObjectProperty;
     instr_storeProperty storeProperty;
     instr_setLookup setLookup;
     instr_storeQObjectProperty storeQObjectProperty;
@@ -749,10 +763,11 @@ union Instr
     instr_mulNumberParams mulNumberParams;
     instr_subNumberParams subNumberParams;
     instr_loadThis loadThis;
-    instr_loadQmlIdObject loadQmlIdObject;
+    instr_loadQmlIdArray loadQmlIdArray;
     instr_loadQmlImportedScripts loadQmlImportedScripts;
     instr_loadQmlContextObject loadQmlContextObject;
     instr_loadQmlScopeObject loadQmlScopeObject;
+    instr_loadQmlSingleton loadQmlSingleton;
 
     static int size(Type type);
 };

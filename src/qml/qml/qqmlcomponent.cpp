@@ -52,7 +52,6 @@
 #include "qqmlbinding_p.h"
 #include "qqmlglobal_p.h"
 #include "qqmlscript_p.h"
-#include <private/qqmlprofilerservice_p.h>
 #include <private/qqmlenginedebugservice_p.h>
 #include "qqmlincubator.h"
 #include "qqmlincubator_p.h"
@@ -884,11 +883,6 @@ QQmlComponentPrivate::beginCreate(QQmlContextData *context)
 
     QQmlEnginePrivate *enginePriv = QQmlEnginePrivate::get(engine);
 
-    if (enginePriv->inProgressCreations == 0) {
-        // only track root, since further ones might not be properly nested
-        profiler = new QQmlObjectCreatingProfiler();
-    }
-
     enginePriv->inProgressCreations++;
     state.errors.clear();
     state.completePending = true;
@@ -924,13 +918,6 @@ QQmlComponentPrivate::beginCreate(QQmlContextData *context)
         if (!context->isInternal)
             context->asQQmlContextPrivate()->instances.append(rv);
         QQmlEngineDebugService::instance()->objectCreated(engine, rv);
-
-        if (profiler && profiler->enabled) {
-            profiler->setTypeName(buildTypeNameForDebug(rv->metaObject()));
-            QQmlData *data = QQmlData::get(rv);
-            Q_ASSERT(data);
-            profiler->setLocation(cc->url, data->lineNumber, data->columnNumber);
-        }
     }
 
     return rv;
@@ -995,9 +982,6 @@ void QQmlComponentPrivate::completeCreate()
     if (state.completePending) {
         QQmlEnginePrivate *ep = QQmlEnginePrivate::get(engine);
         complete(ep, &state);
-
-        delete profiler;
-        profiler = 0;
     }
 
     if (depthIncreased) {
@@ -1507,7 +1491,7 @@ QmlIncubatorObject::QmlIncubatorObject(QV8Engine *engine, QQmlIncubator::Incubat
 {
     incubator.reset(new QQmlComponentIncubator(this, m));
     v8 = engine;
-    vtbl = &static_vtbl;
+    setVTable(&static_vtbl);
 
     valuemap = QV4::Primitive::undefinedValue();
     qmlGlobal = QV4::Primitive::undefinedValue();
@@ -1562,7 +1546,7 @@ void QmlIncubatorObject::statusChanged(QQmlIncubator::Status s)
 
     QV4::ScopedFunctionObject f(scope, m_statusChanged);
     if (f) {
-        QV4::ExecutionContext *ctx = scope.engine->current;
+        QV4::ExecutionContext *ctx = scope.engine->currentContext();
         QV4::ScopedCallData callData(scope, 1);
         callData->thisObject = this;
         callData->args[0] = QV4::Primitive::fromUInt32(s);
