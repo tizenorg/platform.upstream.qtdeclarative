@@ -98,6 +98,7 @@ public:
     virtual void repositionPackageItemAt(QQuickItem *item, int index);
     virtual void resetFirstItemPosition(qreal pos = 0.0);
     virtual void adjustFirstItem(qreal forwards, qreal backwards, int);
+    virtual void updateSizeChangesBeforeVisiblePos(FxViewItem *item, ChangeResult *removeResult);
 
     virtual void createHighlight();
     virtual void updateHighlight();
@@ -844,6 +845,12 @@ void QQuickListViewPrivate::adjustFirstItem(qreal forwards, qreal backwards, int
         return;
     qreal diff = forwards - backwards;
     static_cast<FxListItemSG*>(visibleItems.first())->setPosition(visibleItems.first()->position() + diff);
+}
+
+void QQuickListViewPrivate::updateSizeChangesBeforeVisiblePos(FxViewItem *item, ChangeResult *removeResult)
+{
+    if (item != visibleItems.first())
+        QQuickItemViewPrivate::updateSizeChangesBeforeVisiblePos(item, removeResult);
 }
 
 void QQuickListViewPrivate::createHighlight()
@@ -2142,6 +2149,7 @@ void QQuickListView::setOrientation(QQuickListView::Orientation orientation)
 
 
 /*!
+    \qmlpropertygroup QtQuick::ListView::section
     \qmlproperty string QtQuick::ListView::section.property
     \qmlproperty enumeration QtQuick::ListView::section.criteria
     \qmlproperty Component QtQuick::ListView::section.delegate
@@ -2452,7 +2460,7 @@ void QQuickListView::setSnapMode(SnapMode mode)
     populated, or when the view's \l model changes. (In those cases, the \l populate transition is
     applied instead.) Additionally, this transition should \e not animate the height of the new item;
     doing so will cause any items beneath the new item to be laid out at the wrong position. Instead,
-    the height can be animated within a \l {ListView::onAdd()}{ListView.onAdd} in the delegate.
+    the height can be animated within \l onAdd in the delegate.
 
     \sa addDisplaced, populate, ViewTransition
 */
