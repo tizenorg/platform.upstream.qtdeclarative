@@ -14,4 +14,6 @@ QT += core qml testlib gui-private
 DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0
 
 OTHER_FILES += \
-    data/pixmapCacheTest.qml
+    data/pixmapCacheTest.qml \
+    data/controlFromJS.qml \
+    data/signalSourceLocation.qml

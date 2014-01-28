@@ -664,7 +664,7 @@ void QQmlTypePrivate::insertEnums(const QMetaObject *metaObject) const
 {
     // Add any enum values defined by 'related' classes
     if (metaObject->d.relatedMetaObjects) {
-        const QMetaObject **related = metaObject->d.relatedMetaObjects;
+        const QMetaObject * const *related = metaObject->d.relatedMetaObjects;
         if (related) {
             while (*related)
                 insertEnums(*related++);
@@ -1833,6 +1833,17 @@ QList<QQmlType*> QQmlMetaType::qmlTypes()
     QQmlMetaTypeData *data = metaTypeData();
 
     return data->nameToType.values();
+}
+
+/*!
+    Returns the list of all registered types.
+*/
+QList<QQmlType*> QQmlMetaType::qmlAllTypes()
+{
+    QReadLocker lock(metaTypeDataLock());
+    QQmlMetaTypeData *data = metaTypeData();
+
+    return data->types;
 }
 
 /*!

@@ -1,9 +1,9 @@
 /****************************************************************************
 **
-** Copyright (C) 2013 Digia Plc and/or its subsidiary(-ies).
+** Copyright (C) 2014 Digia Plc and/or its subsidiary(-ies).
 ** Contact: http://www.qt-project.org/legal
 **
-** This file is part of the QtQuick.Dialogs module of the Qt Toolkit.
+** This file is part of the test suite of the Qt Toolkit.
 **
 ** $QT_BEGIN_LICENSE:LGPL$
 ** Commercial License Usage
@@ -39,47 +39,30 @@
 **
 ****************************************************************************/
 
-#ifndef QQUICKMESSAGEDIALOG_P_H
-#define QQUICKMESSAGEDIALOG_P_H
+import QtQuick 2.0
 
-//
-//  W A R N I N G
-//  -------------
-//
-// This file is not part of the Qt API.  It exists purely as an
-// implementation detail.  This header file may change from version to
-// version without notice, or even be removed.
-//
-// We mean it.
-//
+Rectangle {
+    Timer {
+        running: true
+        interval: 1
+        onTriggered: {
+            console.profile();
+            stopTimer.start();
+        }
+    }
 
-#include "qquickabstractmessagedialog_p.h"
+    Timer {
+        id: stopTimer
+        interval: 1000
+        onTriggered: {
+            console.profileEnd();
+            endTimer.start();
+        }
+    }
 
-QT_BEGIN_NAMESPACE
-
-class QQuickMessageDialog : public QQuickAbstractMessageDialog
-{
-    Q_OBJECT
-    Q_PROPERTY(QObject* implementation READ qmlImplementation WRITE setQmlImplementation DESIGNABLE false)
-    Q_CLASSINFO("DefaultProperty", "implementation")    // AbstractMessageDialog in QML can have only one child
-
-public:
-    explicit QQuickMessageDialog(QObject *parent = 0);
-    ~QQuickMessageDialog();
-
-protected:
-    virtual QPlatformDialogHelper *helper() { return 0; }
-
-protected Q_SLOTS:
-    virtual void accept();
-    virtual void reject();
-
-private:
-    Q_DISABLE_COPY(QQuickMessageDialog)
-};
-
-QT_END_NAMESPACE
-
-QML_DECLARE_TYPE(QQuickMessageDialog *)
-
-#endif // QQUICKMESSAGEDIALOG_P_H
+    Timer {
+        id: endTimer
+        interval: 1000
+        onTriggered: Qt.quit();
+    }
+}

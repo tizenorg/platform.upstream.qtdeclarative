@@ -1,19 +1,15 @@
 TEMPLATE=subdirs
 SUBDIRS=\
     qml \
+    quick \
     headersclean \
+    particles \
+    qmltest \
     qmldevtools \
     cmake \
     installed_cmake
 
 qmldevtools.CONFIG = host_build
-
-!mac {
-SUBDIRS += \
-    quick \
-    particles \
-    qmltest
-}
 
 installed_cmake.depends = cmake
 

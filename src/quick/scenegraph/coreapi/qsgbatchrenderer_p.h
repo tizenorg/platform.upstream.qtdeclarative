@@ -194,15 +194,11 @@ struct RenderNodeElement : public Element {
     RenderNodeElement(QSGRenderNode *rn)
         : Element(0)
         , renderNode(rn)
-        , fbo(0)
     {
         isRenderNode = true;
     }
 
-    ~RenderNodeElement();
-
     QSGRenderNode *renderNode;
-    QOpenGLFramebufferObject *fbo;
 };
 
 struct BatchRootInfo {
@@ -276,6 +272,9 @@ struct Batch
     mutable uint uploadedThisFrame : 1; // solely for debugging purposes
 
     Buffer vbo;
+#ifdef QSG_SEPARATE_INDEX_BUFFER
+    Buffer ibo;
+#endif
 
     QDataBuffer<DrawSet> drawSets;
 };
@@ -411,7 +410,7 @@ private:
 
 
     void map(Buffer *buffer, int size);
-    void unmap(Buffer *buffer);
+    void unmap(Buffer *buffer, bool isIndexBuf = false);
 
     void buildRenderListsFromScratch();
     void buildRenderListsForTaggedRoots();
@@ -433,7 +432,6 @@ private:
     void renderUnmergedBatch(const Batch *batch);
     void updateClip(const QSGClipNode *clipList, const Batch *batch);
     const QMatrix4x4 &matrixForRoot(Node *node);
-    void prepareRenderNode(RenderNodeElement *e);
     void renderRenderNode(Batch *batch);
     void setActiveShader(QSGMaterialShader *program, ShaderManager::Shader *shader);
 
@@ -456,6 +454,8 @@ private:
     int m_nextRenderOrder;
     bool m_partialRebuild;
     QSGNode *m_partialRebuildRoot;
+
+    bool m_useDepthBuffer;
 
     QHash<QSGRenderNode *, RenderNodeElement *> m_renderNodeElements;
     QDataBuffer<Batch *> m_opaqueBatches;
@@ -480,6 +480,7 @@ private:
     QSGMaterialShader *m_currentProgram;
     ShaderManager::Shader *m_currentShader;
     const QSGClipNode *m_currentClip;
+    ClipType m_currentClipType;
 
     // For minimal OpenGL core profile support
     QOpenGLVertexArrayObject *m_vao;
@@ -495,6 +496,9 @@ Batch *Renderer::newBatch()
     } else {
         b = new Batch();
         memset(&b->vbo, 0, sizeof(Buffer));
+#ifdef QSG_SEPARATE_INDEX_BUFFER
+        memset(&b->ibo, 0, sizeof(Buffer));
+#endif
     }
     b->init();
     return b;

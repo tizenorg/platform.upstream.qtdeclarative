@@ -1234,7 +1234,7 @@ void QQuickFlickable::mouseReleaseEvent(QMouseEvent *event)
             d->replayDelayedPress();
 
             // Now send the release
-            if (window()->mouseGrabberItem()) {
+            if (window() && window()->mouseGrabberItem()) {
                 QPointF localPos = window()->mouseGrabberItem()->mapFromScene(event->windowPos());
                 QScopedPointer<QMouseEvent> mouseEvent(QQuickWindowPrivate::cloneMouseEvent(event, &localPos));
                 window()->sendEvent(window()->mouseGrabberItem(), mouseEvent.data());
@@ -2309,6 +2309,7 @@ void QQuickFlickable::timelineCompleted()
         return;
     }
     movementEnding();
+    d->updateBeginningEnd();
 }
 
 void QQuickFlickable::movementStarting()
