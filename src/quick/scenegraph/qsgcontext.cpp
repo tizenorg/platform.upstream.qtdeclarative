@@ -446,20 +446,6 @@ void QSGRenderContext::registerFontengineForCleanup(QFontEngine *engine)
 }
 
 /*!
-    compile/initialize are protected member functions of QSGMaterialShader.
-    We expose them here for custom renderers.
- */
-void QSGRenderContext::compileShader(QSGMaterialShader *shader)
-{
-    shader->compile();
-}
-
-void QSGRenderContext::initializeShader(QSGMaterialShader *shader)
-{
-    shader->initialize();
-}
-
-/*!
     Initializes the scene graph render context with the GL context \a context. This also
     emits the ready() signal so that the QML graph can start building scene graph nodes.
  */
@@ -651,6 +637,40 @@ void QSGRenderContext::textureFactoryDestroyed(QObject *o)
     m_mutex.lock();
     m_texturesToDelete << m_textures.take(static_cast<QQuickTextureFactory *>(o));
     m_mutex.unlock();
+}
+
+/*!
+    Compile \a shader, optionally using \a vertexCode and \a fragmentCode as
+    replacement for the source code supplied by \a shader.
+
+    If \a vertexCode or \a fragmentCode is supplied, the caller is responsible
+    for setting up attribute bindings.
+
+    \a material is supplied in case the implementation needs to take the
+    material flags into account.
+ */
+
+void QSGRenderContext::compile(QSGMaterialShader *shader, QSGMaterial *material, const char *vertexCode, const char *fragmentCode)
+{
+    Q_UNUSED(material);
+    if (vertexCode || fragmentCode) {
+        Q_ASSERT_X((material->flags() & QSGMaterial::CustomCompileStep) == 0,
+                   "QSGRenderContext::compile()",
+                   "materials with custom compile step cannot have custom vertex/fragment code");
+        QOpenGLShaderProgram *p = shader->program();
+        p->addShaderFromSourceCode(QOpenGLShader::Vertex, vertexCode ? vertexCode : shader->vertexShader());
+        p->addShaderFromSourceCode(QOpenGLShader::Fragment, fragmentCode ? fragmentCode : shader->fragmentShader());
+        p->link();
+        if (!p->isLinked())
+            qWarning() << "shader compilation failed:" << endl << p->log();
+    } else {
+        shader->compile();
+    }
+}
+
+void QSGRenderContext::initialize(QSGMaterialShader *shader)
+{
+    shader->initialize();
 }
 
 QT_END_NAMESPACE

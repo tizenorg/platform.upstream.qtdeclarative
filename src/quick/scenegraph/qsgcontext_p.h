@@ -106,14 +106,14 @@ public:
     virtual QSGTexture *createTextureNoAtlas(const QImage &image) const;
     virtual QSGRenderer *createRenderer();
 
+    virtual void compile(QSGMaterialShader *shader, QSGMaterial *material, const char *vertexCode = 0, const char *fragmentCode = 0);
+    virtual void initialize(QSGMaterialShader *shader);
+
     void registerFontengineForCleanup(QFontEngine *engine);
 
     static QSGRenderContext *from(QOpenGLContext *context);
 
     bool hasBrokenIndexBufferObjects() const { return m_brokenIBOs; }
-
-    void compileShader(QSGMaterialShader *shader);
-    void initializeShader(QSGMaterialShader *shader);
 
 Q_SIGNALS:
     void initialized();

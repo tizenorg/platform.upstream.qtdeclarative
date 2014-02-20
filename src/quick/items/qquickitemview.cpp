@@ -1381,7 +1381,7 @@ qreal QQuickItemView::originX() const
     if (d->layoutOrientation() == Qt::Horizontal
             && effectiveLayoutDirection() == Qt::RightToLeft
             && contentWidth() < width()) {
-        return d->lastPosition() - d->footerSize();
+        return -d->lastPosition() - d->footerSize();
     }
     return QQuickFlickable::originX();
 }
@@ -1392,7 +1392,7 @@ qreal QQuickItemView::originY() const
     if (d->layoutOrientation() == Qt::Vertical
             && d->verticalLayoutDirection == QQuickItemView::BottomToTop
             && contentHeight() < height()) {
-        return d->lastPosition() - d->footerSize();
+        return -d->lastPosition() - d->footerSize();
     }
     return QQuickFlickable::originY();
 }
@@ -1836,7 +1836,7 @@ void QQuickItemViewPrivate::layout()
 
         prepareVisibleItemTransitions();
 
-        QRectF viewBounds(0, position(), q->width(), q->height());
+        QRectF viewBounds(q->contentX(),  q->contentY(), q->width(), q->height());
         for (QList<FxViewItem*>::Iterator it = releasePendingTransition.begin();
              it != releasePendingTransition.end(); ) {
             FxViewItem *item = *it;
