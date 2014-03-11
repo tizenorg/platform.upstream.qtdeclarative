@@ -25,7 +25,7 @@
 
 Name:       qt5-qtdeclarative
 Summary:    Qt Declarative library
-Version:    5.2.2
+Version:    5.2.90+alpha
 Release:    0%{?dist}
 Group:      Base/Libraries
 License:    LGPL-2.1+ or GPL-3.0
@@ -103,6 +103,24 @@ Requires:   qt5-qtdeclarative-qtquick = %{version}-%{release}
 %description qtquick-devel
 This package contains the development headers for legacy QtQuick 1
 QML support library
+
+%package qtquick-widgets
+Summary:    Qt Declarative - QtQuick Widgets library
+Group:      Base/Libraries
+Requires:   %{name} = %{version}-%{release}
+
+%description qtquick-widgets
+This package contains the QtQuickWidgets QML support library
+
+%package qtquick-widgets-devel
+Summary:    Qt Declarative - QtQuick Widgets development files
+Group:      Base/Libraries
+Requires:   %{name} = %{version}-%{release}
+Requires:   qt5-qtdeclarative-qtquick-widgets = %{version}-%{release}
+
+%description qtquick-widgets-devel
+This package contains the development headers for QtQuickWidgets 
+library 
 
 %package qtquickparticles
 Summary:    Qt Declarative - QtQuick Particles library
@@ -216,22 +234,6 @@ Requires:   %{name} = %{version}-%{release}
 
 %description import-models2
 This package provides the QtDeclarative models plugin for QtQuick 2.0
-
-%package import-dialogs
-Summary:    Qt Declarative dialogs plugin
-Group:      Base/Libraries
-Requires:   %{name} = %{version}-%{release}
-
-%description import-dialogs
-This package provides the QtDeclarative dialogs plugin for QtQuick 2.0
-
-%package import-privatewidgets
-Summary:    Qt Declarative private widgets plugin
-Group:      Base/Libraries
-Requires:   %{name} = %{version}-%{release}
-
-%description import-privatewidgets
-This package provides the QtDeclarative private widgets plugin for QtQuick 2.0
 
 %package import-xmllistmodel
 Summary:    Qt Declarative XmlListModel plugin
@@ -364,6 +366,19 @@ cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
 %{_datadir}/qt5/mkspecs/modules/qt_lib_quick.pri
 %{_datadir}/qt5/mkspecs/modules/qt_lib_quick_private.pri
 
+%files qtquick-widgets
+%{_libdir}/libQt5QuickWidgets.so.5
+%{_libdir}/libQt5QuickWidgets.so.5.*
+
+%files qtquick-widgets-devel
+%defattr(-,root,root,-)
+%{_libdir}/libQt5QuickWidgets.so
+%{_libdir}/libQt5QuickWidgets.prl
+%{_libdir}/pkgconfig/Qt5QuickWidgets.pc
+%{_includedir}/qt5/QtQuickWidgets
+%{_datadir}/qt5/mkspecs/modules/qt_lib_quickwidgets.pri
+%{_datadir}/qt5/mkspecs/modules/qt_lib_quickwidgets_private.pri
+
 %files qmlscene
 %defattr(-,root,root,-)
 %{_qt5_bindir}/qmlscene
@@ -417,14 +432,6 @@ cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
 %files import-models2
 %defattr(-,root,root,-)
 %{_libdir}/qt5/qml/QtQml/Models.2
-
-%files import-dialogs
-%defattr(-,root,root,-)
-%{_libdir}/qt5/qml/QtQuick/Dialogs
-
-%files import-privatewidgets
-%defattr(-,root,root,-)
-%{_libdir}/qt5/qml/QtQuick/PrivateWidgets
 
 %files import-xmllistmodel
 %defattr(-,root,root,-)
