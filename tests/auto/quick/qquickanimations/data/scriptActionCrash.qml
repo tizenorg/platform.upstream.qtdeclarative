@@ -1,9 +1,9 @@
 /****************************************************************************
 **
-** Copyright (C) 2013 Digia Plc and/or its subsidiary(-ies).
+** Copyright (C) 2014 Jolla Ltd.
 ** Contact: http://www.qt-project.org/legal
 **
-** This file is part of the QtQuick module of the Qt Toolkit.
+** This file is part of the test suite of the Qt Toolkit.
 **
 ** $QT_BEGIN_LICENSE:LGPL$
 ** Commercial License Usage
@@ -39,60 +39,34 @@
 **
 ****************************************************************************/
 
-#ifndef QSGRenderLoop_P_H
-#define QSGRenderLoop_P_H
+import QtQuick 2.0
 
-#include <QtGui/QImage>
-#include <private/qtquickglobal_p.h>
+Item {
+    width: 400; height: 400
 
-QT_BEGIN_NAMESPACE
+    Component.onCompleted: rect.state = "wide"
 
-class QQuickWindow;
-class QSGContext;
-class QSGRenderContext;
-class QAnimationDriver;
+    Rectangle {
+        id: rect
 
-class Q_QUICK_PRIVATE_EXPORT QSGRenderLoop : public QObject
-{
-    Q_OBJECT
+        color: "green"
+        width: 50
+        height: 50
+        anchors.centerIn: parent
 
-public:
-    virtual ~QSGRenderLoop();
-
-    virtual void show(QQuickWindow *window) = 0;
-    virtual void hide(QQuickWindow *window) = 0;
-    virtual void resize(QQuickWindow *) {};
-
-    virtual void windowDestroyed(QQuickWindow *window) = 0;
-
-    virtual void exposureChanged(QQuickWindow *window) = 0;
-    virtual QImage grab(QQuickWindow *window) = 0;
-
-    virtual void update(QQuickWindow *window) = 0;
-    virtual void maybeUpdate(QQuickWindow *window) = 0;
-
-    virtual QAnimationDriver *animationDriver() const = 0;
-
-    virtual QSGContext *sceneGraphContext() const = 0;
-    virtual QSGRenderContext *createRenderContext(QSGContext *) const = 0;
-
-    virtual void releaseResources(QQuickWindow *window) = 0;
-
-    // ### make this less of a singleton
-    static QSGRenderLoop *instance();
-    static void setInstance(QSGRenderLoop *instance);
-
-    static bool useConsistentTiming();
-
-    virtual bool interleaveIncubation() const { return false; }
-
-Q_SIGNALS:
-    void timeToIncubate();
-
-protected:
-    void handleContextCreationFailure(QQuickWindow *window, bool isEs);
-};
-
-QT_END_NAMESPACE
-
-#endif // QSGRenderLoop_P_H
+        states: State {
+            name: "wide"
+            PropertyChanges {
+                target: rect
+                width: 100
+            }
+        }
+        transitions: Transition {
+            to: "wide"
+            SequentialAnimation {
+                NumberAnimation { duration: 200; property: "width" }
+                ScriptAction { script: { rect.state = ""; rect.state = "wide" } }
+            }
+        }
+    }
+}

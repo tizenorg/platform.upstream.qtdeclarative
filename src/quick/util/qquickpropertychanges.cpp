@@ -287,6 +287,9 @@ QByteArray QQuickPropertyChangesParser::compile(const QV4::CompiledData::QmlUnit
         case QV4::CompiledData::Binding::Type_Boolean:
             var = binding->valueAsBoolean();
             break;
+        case QV4::CompiledData::Binding::Type_Translation:
+        case QV4::CompiledData::Binding::Type_TranslationById:
+            Q_UNREACHABLE();
         default:
             break;
         }
@@ -474,7 +477,7 @@ QQuickPropertyChanges::ActionList QQuickPropertyChanges::actions()
             a.specifiedObject = d->object;
             a.specifiedProperty = property;
 
-            QQmlBinding *newBinding = e.id != QQmlBinding::Invalid ? QQmlBinding::createBinding(e.id, object(), qmlContext(this), e.url.toString(), e.column) : 0;
+            QQmlBinding *newBinding = e.id != QQmlBinding::Invalid ? QQmlBinding::createBinding(e.id, object(), qmlContext(this)) : 0;
             if (!newBinding)
                 newBinding = new QQmlBinding(e.expression, object(), QQmlContextData::get(qmlContext(this)), e.url.toString(), e.line, e.column);
 

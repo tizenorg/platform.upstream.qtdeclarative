@@ -53,6 +53,7 @@
 #include <private/qqmlvaluetypewrapper_p.h>
 #include <private/qqmlcontextwrapper_p.h>
 #include <private/qqmllistwrapper_p.h>
+#include <private/qqmlbuiltinfunctions_p.h>
 #include <private/qv8engine_p.h>
 
 #include <private/qv4functionobject_p.h>
@@ -473,10 +474,10 @@ void QObjectWrapper::setProperty(QObject *object, ExecutionContext *ctx, QQmlPro
             // binding assignment.
             QQmlContextData *callingQmlContext = QV4::QmlContextWrapper::callingContext(ctx->engine);
 
-            QV4::StackFrame frame = ctx->engine->currentStackFrame();
+            QV4::Scoped<QQmlBindingFunction> bindingFunction(scope, f);
+            bindingFunction->initBindingLocation();
 
-            newBinding = new QQmlBinding(value, object, callingQmlContext, frame.source,
-                                         qmlSourceCoordinate(frame.line), qmlSourceCoordinate(frame.column));
+            newBinding = new QQmlBinding(value, object, callingQmlContext);
             newBinding->setTarget(object, *property, callingQmlContext);
         }
     }
@@ -750,13 +751,18 @@ struct QObjectSlotDispatcher : public QtPrivate::QSlotObjectBase
         break;
         case Call: {
             QObjectSlotDispatcher *This = static_cast<QObjectSlotDispatcher*>(this_);
+            QV4::ExecutionEngine *v4 = This->function.engine();
+            // Might be that we're still connected to a signal that's emitted long
+            // after the engine died. We don't track connections in a global list, so
+            // we need this safeguard.
+            if (!v4)
+                break;
+
             QVarLengthArray<int, 9> dummy;
             int *argsTypes = QQmlPropertyCache::methodParameterTypes(r, This->signalIndex, dummy, 0);
 
             int argCount = argsTypes ? argsTypes[0]:0;
 
-            QV4::ExecutionEngine *v4 = This->function.engine();
-            Q_ASSERT(v4);
             QV4::Scope scope(v4);
             QV4::ScopedFunctionObject f(scope, This->function.value());
             QV4::ExecutionContext *ctx = v4->currentContext();
