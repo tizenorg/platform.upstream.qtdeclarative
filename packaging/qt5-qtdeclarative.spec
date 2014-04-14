@@ -268,8 +268,15 @@ Requires:   %{name} = %{version}-%{release}
 This package contains QML debugging and development tools
 
 
+%package examples
+Summary:    QML and Qt Quick Examples
+Group:      Base/Libraries
+Requires:   %{name} = %{version}-%{release}
 
-
+%description examples
+This package contains QML and Qt Quick Examples for developers.
+Those can run using qmlscene interperter :
+ie: qmlscene ./examples/quick/tutorials/samegame/samegame4/samegame.qml
 
 
 #### Build section
@@ -304,7 +311,9 @@ cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
 %fdupes %{buildroot}%{_libdir}
 %fdupes %{buildroot}%{_includedir}
 
-
+# Manually copy examples
+install -d "%{buildroot}%{_datadir}/qt5/%{name}/"
+cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 
 #### Pre/Post section
@@ -477,7 +486,9 @@ cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
 %files import-settings
 %{_libdir}/qt5/qml/Qt/labs/settings
 
-
+%files examples
+%defattr(-,root,root,-)
+%{_datadir}/qt5/%{name}/examples/*
 
 
 
