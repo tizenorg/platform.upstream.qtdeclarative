@@ -31,6 +31,7 @@ Group:      Base/Libraries
 License:    LGPL-2.1+ or GPL-3.0
 URL:        http://qt.digia.com
 Source0:    %{name}-%{version}.tar.bz2
+Source1001: %{name}.manifest
 BuildRequires:  qt5-qtcore-devel
 BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtnetwork-devel
@@ -283,6 +284,7 @@ ie: qmlscene ./examples/quick/tutorials/samegame/samegame4/samegame.qml
 
 %prep
 %setup -q -n %{name}-%{version}/qtdeclarative
+cp %{SOURCE1001} .
 
 %build
 export QTDIR=/usr/share/qt5
@@ -345,6 +347,7 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5Qml.so.5
 %{_libdir}/libQt5Qml.so.5.*
 
@@ -352,6 +355,7 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 # Find out what gives and find a clean resolution
 %files devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5Qml.so
 %{_libdir}/libQt5Qml.prl
 %{_libdir}/pkgconfig/Qt5Qml.pc
@@ -363,11 +367,13 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files qtquick
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5Quick.so.5
 %{_libdir}/libQt5Quick.so.5.*
 
 %files qtquick-devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5Quick.so
 %{_libdir}/libQt5Quick.prl
 %{_libdir}/pkgconfig/Qt5Quick.pc
@@ -381,6 +387,7 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files qtquick-widgets-devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5QuickWidgets.so
 %{_libdir}/libQt5QuickWidgets.prl
 %{_libdir}/pkgconfig/Qt5QuickWidgets.pc
@@ -390,14 +397,17 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files qmlscene
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_qt5_bindir}/qmlscene
 
 %files qml
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_qt5_bindir}/qml
 
 %files devel-tools
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_qt5_bindir}/qmlplugindump
 %{_qt5_bindir}/qmlprofiler
 %{_qt5_bindir}/qmltestrunner
@@ -408,53 +418,65 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files import-folderlistmodel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/Qt/labs/folderlistmodel/*
 
 %files import-localstorageplugin
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQuick/LocalStorage
 
 %files plugin-qmlinspector
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/plugins/qmltooling/*
 
 %files plugin-accessible
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/plugins/accessible/libqtaccessiblequick.so
 
 %files import-qttest
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtTest
 
 %files import-qtquick2plugin
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQuick.2
 
 %files import-particles2
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQuick/Particles.2
 
 %files import-window2
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQuick/Window.2
 
 %files import-models2
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQml/Models.2
 
 %files import-xmllistmodel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/qt5/qml/QtQuick/XmlListModel
 
 
 
 %files qtquicktest
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5QuickTest.so.5
 %{_libdir}/libQt5QuickTest.so.5.*
 
 %files qtquicktest-devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_includedir}/qt5/QtQuickTest
 %{_libdir}/libQt5QuickTest.so
 %{_libdir}/libQt5QuickTest.prl
@@ -464,11 +486,13 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files qtquickparticles
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5QuickParticles.so.5
 %{_libdir}/libQt5QuickParticles.so.5.*
 
 %files qtquickparticles-devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_includedir}/qt5/QtQuickParticles
 %{_libdir}/libQt5QuickParticles.so
 %{_libdir}/libQt5QuickParticles.prl
@@ -477,6 +501,7 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files qtdeclarativetools-devel
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_libdir}/libQt5QmlDevTools.a
 %{_libdir}/libQt5QmlDevTools.prl
 %{_libdir}/pkgconfig/Qt5QmlDevTools.pc
@@ -488,6 +513,7 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 
 %files examples
 %defattr(-,root,root,-)
+%manifest %{name}.manifest
 %{_datadir}/qt5/%{name}/examples/*
 
 
