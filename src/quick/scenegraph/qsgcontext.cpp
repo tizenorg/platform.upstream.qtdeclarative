@@ -449,7 +449,7 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
     m_gl->setProperty(QSG_RENDERCONTEXT_PROPERTY, QVariant::fromValue(this));
     m_sg->renderContextInitialized(this);
 
-#if defined(Q_OS_LINUX) && !defined(Q_OS_LINUX_TIZEN_SIMULATOR)
+#if defined(Q_OS_LINUX) && !defined(QT_TIZEN_EMULATOR)
     const char *vendor = (const char *) glGetString(GL_VENDOR);
     if (strstr(vendor, "nouveau"))
         m_brokenIBOs = true;
@@ -460,7 +460,7 @@ void QSGRenderContext::initialize(QOpenGLContext *context)
         m_brokenIBOs = true;
 #endif
 
-#ifdef Q_OS_LINUX_TIZEN_SIMULATOR
+#ifdef QT_TIZEN_EMULATOR
     m_brokenIBOs = true;
 #endif
 
