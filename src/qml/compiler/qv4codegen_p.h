@@ -48,7 +48,6 @@
 #include <QtCore/QStringList>
 #include <QStack>
 #include <qqmlerror.h>
-#include <assert.h>
 #include <private/qv4util_p.h>
 
 QT_BEGIN_NAMESPACE
@@ -180,7 +179,7 @@ protected:
             MemberMap::const_iterator it = members.find(name);
             if (it == members.end())
                 return -1;
-            assert((*it).index != -1 || !parent);
+            Q_ASSERT((*it).index != -1 || !parent);
             return (*it).index;
         }
 
@@ -284,7 +283,7 @@ protected:
     }
     void pushExceptionHandler(QV4::IR::BasicBlock *handler)
     {
-        handler->isExceptionHandler = true;
+        handler->setExceptionHandler(true);
         _exceptionHandlers.push(handler);
     }
     void popExceptionHandler()

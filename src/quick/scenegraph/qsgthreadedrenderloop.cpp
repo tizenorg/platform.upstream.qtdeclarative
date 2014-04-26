@@ -59,6 +59,7 @@
 #include <private/qquickanimatorcontroller_p.h>
 
 #include <private/qquickprofiler_p.h>
+#include <private/qqmldebugservice_p.h>
 
 /*
    Overall design:
@@ -451,7 +452,7 @@ bool QSGRenderThread::event(QEvent *e)
             QQuickWindowPrivate::get(window)->renderSceneGraph(windowSize);
 
             QSG_RT_DEBUG(" - grabbing result...");
-            *ce->image = qt_gl_read_framebuffer(windowSize, false, false);
+            *ce->image = qt_gl_read_framebuffer(windowSize * window->devicePixelRatio(), false, false);
         }
         QSG_RT_DEBUG(" - waking gui to handle grab result");
         waitCondition.wakeOne();
@@ -537,6 +538,10 @@ void QSGRenderThread::sync()
     if (current) {
         QQuickWindowPrivate *d = QQuickWindowPrivate::get(window);
         bool hadRenderer = d->renderer != 0;
+        // If the scene graph was touched since the last sync() make sure it sends the
+        // changed signal.
+        if (d->renderer)
+            d->renderer->clearChangedFlag();
         d->syncSceneGraph();
         if (!hadRenderer && d->renderer) {
             QSG_RT_DEBUG(" - renderer was created, hooking up changed signal");
@@ -688,6 +693,8 @@ void QSGRenderThread::run()
     animatorDriver = sgrc->sceneGraphContext()->createAnimationDriver(0);
     animatorDriver->install();
     QUnifiedTimer::instance(true)->setConsistentTiming(QSGRenderLoop::useConsistentTiming());
+    if (QQmlDebugService::isDebuggingEnabled())
+        QQuickProfiler::registerAnimationCallback();
 
     while (active) {
 
@@ -847,6 +854,7 @@ void QSGThreadedRenderLoop::show(QQuickWindow *window)
 
     Window win;
     win.window = window;
+    win.actualWindowFormat = window->format();
     win.thread = new QSGRenderThread(this, QQuickWindowPrivate::get(window)->context);
     win.timerId = 0;
     win.updateDuringSync = false;
@@ -942,8 +950,8 @@ void QSGThreadedRenderLoop::handleExposure(Window *w)
 
         if (!w->thread->gl) {
             w->thread->gl = new QOpenGLContext();
-            if (QSGContext::sharedOpenGLContext())
-                w->thread->gl->setShareContext(QSGContext::sharedOpenGLContext());
+            if (QOpenGLContextPrivate::globalShareContext())
+                w->thread->gl->setShareContext(QOpenGLContextPrivate::globalShareContext());
             w->thread->gl->setFormat(w->window->requestedFormat());
             if (!w->thread->gl->create()) {
                 const bool isEs = w->thread->gl->isES();
@@ -1099,7 +1107,7 @@ void QSGThreadedRenderLoop::releaseResources(QQuickWindow *window, bool inDestru
         if (!window->handle()) {
             QSG_GUI_DEBUG(w->window, " - using fallback surface");
             fallback = new QOffscreenSurface();
-            fallback->setFormat(window->requestedFormat());
+            fallback->setFormat(w->actualWindowFormat);
             fallback->create();
         }
 

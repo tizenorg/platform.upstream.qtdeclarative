@@ -97,11 +97,13 @@ void QQuickWidgetPrivate::handleWindowChange()
 QQuickWidgetPrivate::QQuickWidgetPrivate()
     : root(0)
     , component(0)
+    , offscreenWindow(0)
+    , offscreenSurface(0)
+    , renderControl(0)
     , fbo(0)
     , context(0)
     , resizeMode(QQuickWidget::SizeViewToRootObject)
     , initialSize(0,0)
-    , updateTimer(0)
     , eventPending(false)
     , updatePending(false)
     , fakeHidden(false)
@@ -110,9 +112,7 @@ QQuickWidgetPrivate::QQuickWidgetPrivate()
     offscreenWindow = new QQuickWindow(renderControl);
     offscreenWindow->setTitle(QString::fromLatin1("Offscreen"));
     // Do not call create() on offscreenWindow.
-    offscreenSurface = new QOffscreenSurface;
-    offscreenSurface->setFormat(offscreenWindow->requestedFormat());
-    offscreenSurface->create();
+    createOffscreenSurface();
 }
 
 QQuickWidgetPrivate::~QQuickWidgetPrivate()
@@ -123,6 +123,15 @@ QQuickWidgetPrivate::~QQuickWidgetPrivate()
     delete offscreenWindow;
     delete renderControl;
     delete fbo;
+}
+
+void QQuickWidgetPrivate::createOffscreenSurface()
+{
+    delete offscreenSurface;
+    offscreenSurface = 0;
+    offscreenSurface = new QOffscreenSurface;
+    offscreenSurface->setFormat(offscreenWindow->requestedFormat());
+    offscreenSurface->create();
 }
 
 void QQuickWidgetPrivate::execute()
@@ -188,11 +197,28 @@ void QQuickWidgetPrivate::renderSceneGraph()
 }
 
 /*!
+    \module QtQuickWidgets
+    \title Qt Quick Widgets C++ Classes
+    \ingroup modules
+    \brief The C++ API provided by the Qt Quick Widgets module
+    \qtvariable quickwidgets
+
+    To link against the module, add this line to your \l qmake
+    \c .pro file:
+
+    \code
+    QT += quickwidgets
+    \endcode
+
+    For more information, see the QQuickWidget class documentation.
+*/
+
+/*!
     \class QQuickWidget
     \since 5.3
     \brief The QQuickWidget class provides a widget for displaying a Qt Quick user interface.
 
-    \inmodule QtQuick
+    \inmodule QtQuickWidgets
 
     This is a convenience wrapper for QQuickWindow which will automatically load and display a QML
     scene when given the URL of the main source file. Alternatively, you can instantiate your own
@@ -225,7 +251,7 @@ void QQuickWidgetPrivate::renderSceneGraph()
     some of the benefits of threaded rendering, for example \l Animator classes and vsync driven
     animations, will not be available.
 
-    \sa {Exposing Attributes of C++ Types to QML}, QQuickView
+    \sa {Exposing Attributes of C++ Types to QML}, {Qt Quick Widgets Example}, QQuickView
 */
 
 
@@ -395,12 +421,12 @@ QQmlContext* QQuickWidget::rootContext() const
 /*!
     \fn void QQuickWidget::sceneGraphError(QQuickWindow::SceneGraphError error, const QString &message)
 
-    This signal is emitted when an error occurred during scene graph initialization.
+    This signal is emitted when an \a error occurred during scene graph initialization.
 
     Applications should connect to this signal if they wish to handle errors,
     like OpenGL context creation failures, in a custom way. When no slot is
     connected to the signal, the behavior will be different: Quick will print
-    the message, or show a message box, and terminate the application.
+    the \a message, or show a message box, and terminate the application.
 
     This signal will be emitted from the gui thread.
 
@@ -560,8 +586,8 @@ void QQuickWidgetPrivate::createContext()
     context = new QOpenGLContext;
     context->setFormat(offscreenWindow->requestedFormat());
 
-    if (QSGContext::sharedOpenGLContext())
-        context->setShareContext(QSGContext::sharedOpenGLContext()); // ??? is this correct
+    if (QOpenGLContextPrivate::globalShareContext())
+        context->setShareContext(QOpenGLContextPrivate::globalShareContext());
     if (!context->create()) {
         const bool isEs = context->isES();
         delete context;
@@ -604,7 +630,7 @@ void QQuickWidget::createFramebufferObject()
     }
 
     context->makeCurrent(d->offscreenSurface);
-    d->fbo = new QOpenGLFramebufferObject(size());
+    d->fbo = new QOpenGLFramebufferObject(size() * window()->devicePixelRatio());
     d->fbo->setAttachment(QOpenGLFramebufferObject::CombinedDepthStencil);
     d->offscreenWindow->setRenderTarget(d->fbo);
 
@@ -687,7 +713,8 @@ void QQuickWidgetPrivate::setRootObject(QObject *obj)
     }
     if (root) {
         initialSize = rootObjectSize();
-        if ((resizeMode == QQuickWidget::SizeViewToRootObject || q->width() <= 1 || q->height() <= 1) &&
+        bool resized = q->testAttribute(Qt::WA_Resized);
+        if ((resizeMode == QQuickWidget::SizeViewToRootObject || !resized) &&
             initialSize != q->size()) {
             q->resize(initialSize);
         }
@@ -702,8 +729,7 @@ GLuint QQuickWidgetPrivate::textureId() const
 
 /*!
   \internal
-  If the \l {QTimerEvent} {timer event} \a e is this
-  view's resize timer, sceneResized() is emitted.
+  Handle item resize and scene updates.
  */
 void QQuickWidget::timerEvent(QTimerEvent* e)
 {
@@ -711,6 +737,11 @@ void QQuickWidget::timerEvent(QTimerEvent* e)
     if (!e || e->timerId() == d->resizetimer.timerId()) {
         d->updateSize();
         d->resizetimer.stop();
+    } else if (e->timerId() == d->updateTimer.timerId()) {
+        d->eventPending = false;
+        d->updateTimer.stop();
+        if (d->updatePending)
+            d->renderSceneGraph();
     }
 }
 
@@ -902,14 +933,6 @@ bool QQuickWidget::event(QEvent *e)
     Q_D(QQuickWidget);
 
     switch (e->type()) {
-    case QEvent::Timer:
-        d->eventPending = false;
-        killTimer(d->updateTimer);
-        d->updateTimer = 0;
-        if (d->updatePending)
-            d->renderSceneGraph();
-        return true;
-
     case QEvent::TouchBegin:
     case QEvent::TouchEnd:
     case QEvent::TouchUpdate:
@@ -936,9 +959,47 @@ void QQuickWidget::triggerUpdate()
     d->updatePending = true;
      if (!d->eventPending) {
         const int exhaustDelay = 5;
-        d->updateTimer = startTimer(exhaustDelay, Qt::PreciseTimer);
+        d->updateTimer.start(exhaustDelay, Qt::PreciseTimer, this);
         d->eventPending = true;
     }
+}
+
+/*!
+    Sets the surface \a format for the context and offscreen surface used
+    by this widget.
+
+    Call this function when there is a need to request a context for a
+    given OpenGL version or profile. The sizes for depth, stencil and
+    alpha buffers are taken care of automatically and there is no need
+    to request those explicitly.
+
+    \sa QWindow::setFormat(), QWindow::format(), format()
+*/
+void QQuickWidget::setFormat(const QSurfaceFormat &format)
+{
+    Q_D(QQuickWidget);
+    QSurfaceFormat currentFormat = d->offscreenWindow->format();
+    QSurfaceFormat newFormat = format;
+    newFormat.setDepthBufferSize(qMax(newFormat.depthBufferSize(), currentFormat.depthBufferSize()));
+    newFormat.setStencilBufferSize(qMax(newFormat.stencilBufferSize(), currentFormat.stencilBufferSize()));
+    newFormat.setAlphaBufferSize(qMax(newFormat.alphaBufferSize(), currentFormat.alphaBufferSize()));
+    if (currentFormat != newFormat) {
+        d->offscreenWindow->setFormat(newFormat);
+        d->createOffscreenSurface();
+    }
+}
+
+/*!
+    Returns the actual surface format.
+
+    If the widget has not yet been shown, the requested format is returned.
+
+    \sa setFormat()
+*/
+QSurfaceFormat QQuickWidget::format() const
+{
+    Q_D(const QQuickWidget);
+    return d->offscreenWindow->format();
 }
 
 QT_END_NAMESPACE

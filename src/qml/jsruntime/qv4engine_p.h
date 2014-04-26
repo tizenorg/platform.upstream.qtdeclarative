@@ -200,10 +200,12 @@ public:
     QQmlJS::MemoryPool classPool;
     InternalClass *emptyClass;
     InternalClass *executionContextClass;
+    InternalClass *constructClass;
     InternalClass *stringClass;
 
     InternalClass *objectClass;
     InternalClass *arrayClass;
+    InternalClass *simpleArrayDataClass;
     InternalClass *stringObjectClass;
     InternalClass *booleanClass;
     InternalClass *numberClass;
@@ -227,6 +229,7 @@ public:
     InternalClass *strictArgumentsObjectClass;
 
     InternalClass *variantClass;
+    InternalClass *memberDataClass;
 
     EvalFunction *evalFunction;
     FunctionObject *thrower;
@@ -234,6 +237,7 @@ public:
     Property *argumentsAccessors;
     int nArgumentsAccessors;
 
+    StringValue id_empty;
     StringValue id_undefined;
     StringValue id_null;
     StringValue id_true;

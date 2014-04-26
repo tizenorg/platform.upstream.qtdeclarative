@@ -82,11 +82,11 @@ void showMeTheCode(IR::Function *function)
         QVector<Stmt *> code;
         QHash<Stmt *, BasicBlock *> leader;
 
-        foreach (BasicBlock *block, function->basicBlocks) {
-            if (block->statements.isEmpty())
+        foreach (BasicBlock *block, function->basicBlocks()) {
+            if (block->isRemoved() || block->isEmpty())
                 continue;
-            leader.insert(block->statements.first(), block);
-            foreach (Stmt *s, block->statements) {
+            leader.insert(block->statements().first(), block);
+            foreach (Stmt *s, block->statements()) {
                 code.append(s);
             }
         }
@@ -118,11 +118,11 @@ void showMeTheCode(IR::Function *function)
                 qout << endl;
                 QByteArray str;
                 str.append('L');
-                str.append(QByteArray::number(bb->index));
+                str.append(QByteArray::number(bb->index()));
                 str.append(':');
                 if (bb->catchBlock) {
                     str.append(" (exception handler L");
-                    str.append(QByteArray::number(bb->catchBlock->index));
+                    str.append(QByteArray::number(bb->catchBlock->index()));
                     str.append(')');
                 }
                 for (int i = 66 - str.length(); i; --i)
@@ -130,11 +130,11 @@ void showMeTheCode(IR::Function *function)
                 qout << str;
                 qout << "// predecessor blocks:";
                 foreach (BasicBlock *in, bb->in)
-                    qout << " L" << in->index;
+                    qout << " L" << in->index();
                 if (bb->in.isEmpty())
                     qout << "(none)";
                 if (BasicBlock *container = bb->containingGroup())
-                    qout << "; container block: L" << container->index;
+                    qout << "; container block: L" << container->index();
                 if (bb->isGroupStart())
                     qout << "; group start";
                 qout << endl;
@@ -161,7 +161,7 @@ void showMeTheCode(IR::Function *function)
             qout << endl;
 
             if (n && s->asCJump()) {
-                qout << "    else goto L" << s->asCJump()->iffalse->index << ";" << endl;
+                qout << "    else goto L" << s->asCJump()->iffalse->index() << ";" << endl;
             }
         }
 
@@ -175,24 +175,21 @@ class ProcessedBlocks
     QBitArray processed;
 
 public:
-    ProcessedBlocks(const QVector<BasicBlock *> allBlocks)
+    ProcessedBlocks(IR::Function *function)
     {
-        int maxBB = 0;
-        foreach (BasicBlock *bb, allBlocks)
-            maxBB = qMax(maxBB, bb->index);
-        processed = QBitArray(maxBB + 1, false);
+        processed = QBitArray(function->basicBlockCount(), false);
     }
 
     bool alreadyProcessed(BasicBlock *bb) const
     {
         Q_ASSERT(bb);
 
-        return processed.at(bb->index);
+        return processed.at(bb->index());
     }
 
     void markAsProcessed(BasicBlock *bb)
     {
-        processed.setBit(bb->index);
+        processed.setBit(bb->index());
     }
 };
 
@@ -226,7 +223,7 @@ class BasicBlockSet
 
     Numbers *blockNumbers;
     Flags *blockFlags;
-    QVector<BasicBlock *> allBlocks;
+    IR::Function *function;
     enum { MaxVectorCapacity = 8 };
 
     // Q_DISABLE_COPY(BasicBlockSet); disabled because MSVC wants assignment operator for std::vector
@@ -268,10 +265,10 @@ public:
         BasicBlock *operator*() const
         {
             if (set.blockNumbers) {
-                return set.allBlocks.at(*numberIt);
+                return set.function->basicBlock(*numberIt);
             } else {
                 Q_ASSERT(flagIt <= INT_MAX);
-                return set.allBlocks.at(static_cast<int>(flagIt));
+                return set.function->basicBlock(static_cast<int>(flagIt));
             }
         }
 
@@ -308,22 +305,23 @@ public:
     friend class const_iterator;
 
 public:
-    BasicBlockSet(): blockNumbers(0), blockFlags(0) {}
+    BasicBlockSet(): blockNumbers(0), blockFlags(0), function(0) {}
 #ifdef Q_COMPILER_RVALUE_REFS
     BasicBlockSet(BasicBlockSet &&other): blockNumbers(0), blockFlags(0)
     {
         std::swap(blockNumbers, other.blockNumbers);
         std::swap(blockFlags, other.blockFlags);
-        std::swap(allBlocks, other.allBlocks);
+        std::swap(function, other.function);
     }
 
 #endif // Q_COMPILER_RVALUE_REFS
     ~BasicBlockSet() { delete blockNumbers; delete blockFlags; }
 
-    void init(const QVector<BasicBlock *> &nodes)
+    void init(IR::Function *f)
     {
-        Q_ASSERT(allBlocks.isEmpty());
-        allBlocks = nodes;
+        Q_ASSERT(!function);
+        Q_ASSERT(f);
+        function = f;
         blockNumbers = new Numbers;
         blockNumbers->reserve(MaxVectorCapacity);
     }
@@ -331,25 +329,25 @@ public:
     void insert(BasicBlock *bb)
     {
         if (blockFlags) {
-            (*blockFlags)[bb->index] = true;
+            (*blockFlags)[bb->index()] = true;
             return;
         }
 
         for (std::vector<int>::const_iterator i = blockNumbers->begin(), ei = blockNumbers->end();
              i != ei; ++i)
-            if (*i == bb->index)
+            if (*i == bb->index())
                 return;
 
         if (blockNumbers->size() == MaxVectorCapacity) {
-            blockFlags = new Flags(allBlocks.size(), false);
+            blockFlags = new Flags(function->basicBlockCount(), false);
             for (std::vector<int>::const_iterator i = blockNumbers->begin(), ei = blockNumbers->end();
                  i != ei; ++i)
                 blockFlags->operator[](*i) = true;
             delete blockNumbers;
             blockNumbers = 0;
-            blockFlags->operator[](bb->index) = true;
+            blockFlags->operator[](bb->index()) = true;
         } else {
-            blockNumbers->push_back(bb->index);
+            blockNumbers->push_back(bb->index());
         }
     }
 
@@ -371,7 +369,7 @@ class DominatorTree {
     typedef int BasicBlockIndex;
     enum { InvalidBasicBlockIndex = -1 };
 
-    QVector<BasicBlock *> nodes;
+    IR::Function *function;
     int N;
     std::vector<int> dfnum; // BasicBlock index -> dfnum
     std::vector<int> vertex;
@@ -410,12 +408,12 @@ class DominatorTree {
                 vertex[N] = n;
                 parent[n] = todo.parent;
                 ++N;
-                const QVector<BasicBlock *> &out = nodes[n]->out;
+                const QVector<BasicBlock *> &out = function->basicBlock(n)->out;
                 for (int i = out.size() - 1; i > 0; --i)
-                    worklist.push_back(DFSTodo(out[i]->index, n));
+                    worklist.push_back(DFSTodo(out[i]->index(), n));
 
                 if (out.size() > 0) {
-                    todo.node = out.first()->index;
+                    todo.node = out.first()->index();
                     todo.parent = n;
                     continue;
                 }
@@ -463,21 +461,23 @@ class DominatorTree {
     }
 
     void calculateIDoms() {
-        Q_ASSERT(nodes.first()->in.isEmpty());
+        Q_ASSERT(function->basicBlock(0)->in.isEmpty());
 
-        vertex = std::vector<int>(nodes.size(), InvalidBasicBlockIndex);
-        parent = std::vector<int>(nodes.size(), InvalidBasicBlockIndex);
-        dfnum = std::vector<int>(nodes.size(), 0);
-        semi = std::vector<BasicBlockIndex>(nodes.size(), InvalidBasicBlockIndex);
-        ancestor = std::vector<BasicBlockIndex>(nodes.size(), InvalidBasicBlockIndex);
-        idom = std::vector<BasicBlockIndex>(nodes.size(), InvalidBasicBlockIndex);
-        samedom = std::vector<BasicBlockIndex>(nodes.size(), InvalidBasicBlockIndex);
-        best = std::vector<BasicBlockIndex>(nodes.size(), InvalidBasicBlockIndex);
+        const int bbCount = function->basicBlockCount();
+        vertex = std::vector<int>(bbCount, InvalidBasicBlockIndex);
+        parent = std::vector<int>(bbCount, InvalidBasicBlockIndex);
+        dfnum = std::vector<int>(bbCount, 0);
+        semi = std::vector<BasicBlockIndex>(bbCount, InvalidBasicBlockIndex);
+        ancestor = std::vector<BasicBlockIndex>(bbCount, InvalidBasicBlockIndex);
+        idom = std::vector<BasicBlockIndex>(bbCount, InvalidBasicBlockIndex);
+        samedom = std::vector<BasicBlockIndex>(bbCount, InvalidBasicBlockIndex);
+        best = std::vector<BasicBlockIndex>(bbCount, InvalidBasicBlockIndex);
 
         QHash<BasicBlockIndex, std::vector<BasicBlockIndex> > bucket;
+        bucket.reserve(bbCount);
 
-        DFS(nodes.first()->index);
-        Q_ASSERT(N == nodes.size()); // fails with unreachable nodes, but those should have been removed before.
+        DFS(function->basicBlock(0)->index());
+        Q_ASSERT(N == function->liveBasicBlocksCount());
 
         std::vector<BasicBlockIndex> worklist;
         worklist.reserve(vertex.capacity() / 2);
@@ -487,12 +487,12 @@ class DominatorTree {
             BasicBlockIndex p = parent[n];
             BasicBlockIndex s = p;
 
-            foreach (BasicBlock *v, nodes.at(n)->in) {
+            foreach (BasicBlock *v, function->basicBlock(n)->in) {
                 BasicBlockIndex ss = InvalidBasicBlockIndex;
-                if (dfnum[v->index] <= dfnum[n])
-                    ss = v->index;
+                if (dfnum[v->index()] <= dfnum[n])
+                    ss = v->index();
                 else
-                    ss = semi[ancestorWithLowestSemi(v->index, worklist)];
+                    ss = semi[ancestorWithLowestSemi(v->index(), worklist)];
                 if (dfnum[ss] < dfnum[s])
                     s = ss;
             }
@@ -540,6 +540,7 @@ class DominatorTree {
                 qout << "(none)";
             qout << " -> " << to->index << endl;
         }
+        qout << "N = " << N << endl;
 #endif // SHOW_SSA
     }
 
@@ -551,10 +552,12 @@ class DominatorTree {
     void computeDF() {
         // compute children of each node in the dominator tree
         std::vector<std::vector<BasicBlockIndex> > children; // BasicBlock index -> children
-        children.resize(nodes.size());
-        foreach (BasicBlock *n, nodes) {
-            const BasicBlockIndex nodeIndex = n->index;
-            Q_ASSERT(nodes.at(nodeIndex) == n);
+        children.resize(function->basicBlockCount());
+        foreach (BasicBlock *n, function->basicBlocks()) {
+            if (n->isRemoved())
+                continue;
+            const BasicBlockIndex nodeIndex = n->index();
+            Q_ASSERT(function->basicBlock(nodeIndex) == n);
             const BasicBlockIndex nodeDominator = idom[nodeIndex];
             if (nodeDominator == InvalidBasicBlockIndex)
                 continue; // there is no dominator to add this node to as a child (e.g. the start node)
@@ -563,18 +566,20 @@ class DominatorTree {
 
         // Fill the worklist and initialize the node status for each basic-block
         QHash<BasicBlockIndex, NodeProgress> nodeStatus;
-        nodeStatus.reserve(nodes.size());
+        nodeStatus.reserve(function->basicBlockCount());
         std::vector<BasicBlockIndex> worklist;
-        worklist.reserve(nodes.size() * 2);
-        for (int i = 0, ei = nodes.size(); i != ei; ++i) {
-            BasicBlockIndex nodeIndex = nodes.at(i)->index;
+        worklist.reserve(function->basicBlockCount() * 2);
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
+            BasicBlockIndex nodeIndex = bb->index();
             worklist.push_back(nodeIndex);
             NodeProgress &np = nodeStatus[nodeIndex];
             np.children = children[nodeIndex];
             np.todo = children[nodeIndex];
         }
 
-        std::vector<bool> DF_done(nodes.size(), false);
+        std::vector<bool> DF_done(function->basicBlockCount(), false);
 
         while (!worklist.empty()) {
             BasicBlockIndex node = worklist.back();
@@ -597,16 +602,16 @@ class DominatorTree {
 
             if (np.todo.empty()) {
                 BasicBlockSet &S = DF[node];
-                S.init(nodes);
-                foreach (BasicBlock *y, nodes.at(node)->out)
-                    if (idom[y->index] != node)
+                S.init(function);
+                foreach (BasicBlock *y, function->basicBlock(node)->out)
+                    if (idom[y->index()] != node)
                         S.insert(y);
                 foreach (BasicBlockIndex child, np.children) {
                     const BasicBlockSet &ws = DF[child];
                     for (BasicBlockSet::const_iterator it = ws.begin(), eit = ws.end(); it != eit; ++it) {
                         BasicBlock *w = *it;
-                        const BasicBlockIndex wIndex = w->index;
-                        if (node == wIndex || !dominates(node, w->index))
+                        const BasicBlockIndex wIndex = w->index();
+                        if (node == wIndex || !dominates(node, w->index()))
                             S.insert(w);
                     }
                 }
@@ -651,21 +656,21 @@ class DominatorTree {
     }
 
 public:
-    DominatorTree(const QVector<BasicBlock *> &nodes)
-        : nodes(nodes)
+    DominatorTree(IR::Function *function)
+        : function(function)
         , N(0)
     {
-        DF.resize(nodes.size());
+        DF.resize(function->basicBlockCount());
         calculateIDoms();
         computeDF();
     }
 
     const BasicBlockSet &dominatorFrontier(BasicBlock *n) const {
-        return DF[n->index];
+        return DF[n->index()];
     }
 
     BasicBlock *immediateDominator(BasicBlock *bb) const {
-        return nodes[idom[bb->index]];
+        return function->basicBlock(idom[bb->index()]);
     }
 
     void dumpImmediateDominators() const
@@ -680,46 +685,30 @@ public:
 
     void updateImmediateDominator(BasicBlock *bb, BasicBlock *newDominator)
     {
-        Q_ASSERT(bb->index >= 0);
+        Q_ASSERT(bb->index() >= 0);
 
-        int blockIndex;
-        if (static_cast<std::vector<BasicBlockIndex>::size_type>(bb->index) >= idom.size()) {
+        if (static_cast<std::vector<BasicBlockIndex>::size_type>(bb->index()) >= idom.size()) {
             // This is a new block, probably introduced by edge splitting. So, we'll have to grow
             // the array before inserting the immediate dominator.
-            nodes.append(bb);
-            idom.resize(nodes.size(), InvalidBasicBlockIndex);
-            blockIndex = nodes.size() - 1;
-        } else {
-            blockIndex = getBlockIndex(bb);
+            idom.resize(function->basicBlockCount(), InvalidBasicBlockIndex);
         }
 
-        idom[blockIndex] = getBlockIndex(newDominator);
+        idom[bb->index()] = newDominator->index();
     }
 
     bool dominates(BasicBlock *dominator, BasicBlock *dominated) const {
-        // The index of the basic blocks might have changed, or the nodes array might have changed,
-        // so get the index from our copy of the array.
-        return dominates(getBlockIndex(dominator), getBlockIndex(dominated));
+        return dominates(dominator->index(), dominated->index());
     }
 
 private:
-    int getBlockIndex(BasicBlock *bb) const {
-        if (!bb)
-            return InvalidBasicBlockIndex;
-
-        if (bb->index >= 0 && bb->index < nodes.size()) {
-            if (nodes.at(bb->index) == bb)
-                return bb->index;
-        }
-
-        return nodes.indexOf(bb);
-    }
-
     bool dominates(BasicBlockIndex dominator, BasicBlockIndex dominated) const {
         // dominator can be Invalid when the dominated block has no dominator (i.e. the start node)
         Q_ASSERT(dominated != InvalidBasicBlockIndex);
 
-        for (BasicBlockIndex it = dominated; it != InvalidBasicBlockIndex; it = idom[it]) {
+        if (dominator == dominated)
+            return false;
+
+        for (BasicBlockIndex it = idom[dominated]; it != InvalidBasicBlockIndex; it = idom[it]) {
             if (it == dominator)
                 return true;
         }
@@ -729,8 +718,9 @@ private:
 };
 
 class VariableCollector: public StmtVisitor, ExprVisitor {
-    QHash<Temp, QSet<BasicBlock *> > _defsites;
-    QHash<BasicBlock *, QSet<Temp> > A_orig;
+    typedef QHash<Temp, QSet<BasicBlock *> > DefSites;
+    DefSites _defsites;
+    QVector<QSet<Temp> > A_orig;
     QSet<Temp> nonLocals;
     QSet<Temp> killed;
 
@@ -747,16 +737,22 @@ public:
         : function(function)
     {
         _defsites.reserve(function->tempCount);
+        A_orig.resize(function->basicBlockCount());
+        for (int i = 0, ei = A_orig.size(); i != ei; ++i)
+            A_orig[i].reserve(8);
 
 #if defined(SHOW_SSA)
         qout << "Variables collected:" << endl;
 #endif // SHOW_SSA
 
-        foreach (BasicBlock *bb, function->basicBlocks) {
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
+
             currentBB = bb;
             killed.clear();
-            killed.reserve(bb->statements.size() / 2);
-            foreach (Stmt *s, bb->statements) {
+            killed.reserve(bb->statements().size() / 2);
+            foreach (Stmt *s, bb->statements()) {
                 s->accept(this);
             }
         }
@@ -782,7 +778,7 @@ public:
     }
 
     QSet<Temp> inBlock(BasicBlock *n) const {
-        return A_orig[n];
+        return A_orig.at(n->index());
     }
 
     bool isNonLocal(const Temp &var) const { return nonLocals.contains(var); }
@@ -828,8 +824,15 @@ protected:
                 qout << " -> L" << currentBB->index << endl;
 #endif // SHOW_SSA
 
-                _defsites[*t].insert(currentBB);
-                A_orig[currentBB].insert(*t);
+                DefSites::iterator defsitesIt = _defsites.find(*t);
+                if (defsitesIt == _defsites.end()) {
+                    QSet<BasicBlock *> bbs;
+                    bbs.reserve(4);
+                    defsitesIt = _defsites.insert(*t, bbs);
+                }
+                defsitesIt->insert(currentBB);
+
+                A_orig[currentBB->index()].insert(*t);
 
                 // For semi-pruned SSA:
                 killed.insert(*t);
@@ -858,7 +861,7 @@ void insertPhiNode(const Temp &a, BasicBlock *y, IR::Function *f) {
     phiNode->d = new Stmt::Data;
     phiNode->targetTemp = f->New<Temp>();
     phiNode->targetTemp->init(a.kind, a.index, 0);
-    y->statements.prepend(phiNode);
+    y->prependStatement(phiNode);
 
     phiNode->d->incoming.resize(y->in.size());
     for (int i = 0, ei = y->in.size(); i < ei; ++i) {
@@ -997,15 +1000,15 @@ public:
     VariableRenamer(IR::Function *f)
         : function(f)
         , tempCount(0)
-        , processed(f->basicBlocks)
+        , processed(f)
     {
         localMapping.reserve(f->tempCount);
         vregMapping.reserve(f->tempCount);
-        todo.reserve(f->basicBlocks.size());
+        todo.reserve(f->basicBlockCount());
     }
 
     void run() {
-        todo.append(TodoAction(function->basicBlocks.first()));
+        todo.append(TodoAction(function->basicBlock(0)));
 
         while (!todo.isEmpty()) {
             TodoAction todoAction = todo.back();
@@ -1060,13 +1063,13 @@ private:
 
     void renameStatementsAndPhis(BasicBlock *bb)
     {
-        foreach (Stmt *s, bb->statements)
+        foreach (Stmt *s, bb->statements())
             s->accept(this);
 
         foreach (BasicBlock *Y, bb->out) {
             const int j = Y->in.indexOf(bb);
             Q_ASSERT(j >= 0 && j < Y->in.size());
-            foreach (Stmt *s, Y->statements) {
+            foreach (Stmt *s, Y->statements()) {
                 if (Phi *phi = s->asPhi()) {
                     Temp *t = phi->d->incoming[j]->asTemp();
                     unsigned newTmp = currentNumber(*t);
@@ -1201,7 +1204,7 @@ protected:
 
 void convertToSSA(IR::Function *function, const DominatorTree &df)
 {
-#ifdef SHOW_SSA
+#if defined(SHOW_SSA)
     qout << "Converting function ";
     if (function->name)
         qout << *function->name;
@@ -1213,8 +1216,16 @@ void convertToSSA(IR::Function *function, const DominatorTree &df)
     // Collect all applicable variables:
     VariableCollector variables(function);
 
+    // Prepare for phi node insertion:
+    QVector<QSet<Temp> > A_phi;
+    A_phi.resize(function->basicBlockCount());
+    for (int i = 0, ei = A_phi.size(); i != ei; ++i) {
+        QSet<Temp> temps;
+        temps.reserve(4);
+        A_phi[i] = temps;
+    }
+
     // Place phi functions:
-    QHash<BasicBlock *, QSet<Temp> > A_phi;
     foreach (Temp a, variables.vars()) {
         if (!variables.isNonLocal(a))
             continue; // for semi-pruned SSA
@@ -1227,9 +1238,9 @@ void convertToSSA(IR::Function *function, const DominatorTree &df)
             for (BasicBlockSet::const_iterator it = dominatorFrontierForN.begin(), eit = dominatorFrontierForN.end();
                  it != eit; ++it) {
                 BasicBlock *y = *it;
-                if (!A_phi[y].contains(a)) {
+                if (!A_phi.at(y->index()).contains(a)) {
                     insertPhiNode(a, y, function);
-                    A_phi[y].insert(a);
+                    A_phi[y->index()].insert(a);
                     if (!variables.inBlock(y).contains(a))
                         W.append(y);
                 }
@@ -1302,9 +1313,12 @@ public:
     DefUsesCalculator(IR::Function *function)
         : function(function)
     {
-        foreach (BasicBlock *bb, function->basicBlocks) {
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
+
             _block = bb;
-            foreach (Stmt *stmt, bb->statements) {
+            foreach (Stmt *stmt, bb->statements()) {
                 _stmt = stmt;
                 stmt->accept(this);
             }
@@ -1386,7 +1400,7 @@ public:
         foreach (const UntypedTemp &var, _defUses.keys()) {
             const DefUse &du = _defUses[var];
             var.temp.dump(qout);
-            qout<<" -> defined in block "<<du.blockOfStatement->index<<", statement: ";
+            qout<<" -> defined in block "<<du.blockOfStatement->index()<<", statement: ";
             du.defStmt->dump(qout);
             qout<<endl<<"     uses:"<<endl;
             foreach (Stmt *s, du.uses) {
@@ -1478,10 +1492,7 @@ void cleanupPhis(DefUsesCalculator &defUses)
     foreach (Phi *phi, toRemove) {
         Temp targetVar = *phi->targetTemp;
 
-        BasicBlock *bb = defUses.defStmtBlock(targetVar);
-        int idx = bb->statements.indexOf(phi);
-        bb->statements[idx]->destroyData();
-        bb->statements.remove(idx);
+        defUses.defStmtBlock(targetVar)->removeStatement(phi);
 
         foreach (const Temp &usedVar, defUses.usedVars(phi))
             defUses.removeUse(phi, usedVar);
@@ -1493,7 +1504,8 @@ class StatementWorklist
 {
     QVector<Stmt *> worklist;
     QBitArray inWorklist;
-    QHash<Stmt*,Stmt**> ref;
+    QSet<Stmt *> removed;
+    QHash<Stmt*,Stmt*> replaced;
 
 public:
     StatementWorklist(IR::Function *function)
@@ -1503,12 +1515,13 @@ public:
 
         // Put in all statements, and number them on the fly. The numbering is used to index the
         // bit array.
-        foreach (BasicBlock *bb, function->basicBlocks) {
-            for (int i = 0, ei = bb->statements.size(); i != ei; ++i) {
-                Stmt **s = &bb->statements[i];
-                (*s)->id = stmtCount++;
-                w.append(*s);
-                ref.insert(*s, s);
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
+
+            foreach (Stmt *s, bb->statements()) {
+                s->id = stmtCount++;
+                w.append(s);
             }
         }
 
@@ -1527,29 +1540,40 @@ public:
     void clear(Stmt *stmt)
     {
         Q_ASSERT(!inWorklist.at(stmt->id));
-        *ref[stmt] = 0;
+        removed.insert(stmt);
     }
 
     void replace(Stmt *oldStmt, Stmt *newStmt)
     {
         Q_ASSERT(oldStmt);
         Q_ASSERT(newStmt);
+        Q_ASSERT(!removed.contains(oldStmt));
 
         if (newStmt->id == -1)
             newStmt->id = oldStmt->id;
-        *ref[oldStmt] = newStmt;
+        QHash<Stmt *, Stmt *>::const_iterator it = replaced.find(oldStmt);
+        if (it != replaced.end())
+            oldStmt = it.key();
+        replaced[oldStmt] = newStmt;
     }
 
     void cleanup(IR::Function *function)
     {
-        foreach (BasicBlock *bb, function->basicBlocks) {
-            for (int i = 0; i < bb->statements.size();) {
-                if (bb->statements[i]) {
-                    bb->statements[i]->id = -1;
-                    ++i;
-                } else {
-                    bb->statements.remove(i);
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
+
+            for (int i = 0; i < bb->statementCount();) {
+                Stmt *stmt = bb->statements()[i];
+                QHash<Stmt *, Stmt *>::const_iterator it = replaced.find(stmt);
+                if (it != replaced.end() && !removed.contains(it.value())) {
+                    bb->replaceStatement(i, it.value());
+                } else if (removed.contains(stmt)) {
+                    bb->removeStatement(i);
+                    continue;
                 }
+
+                ++i;
             }
         }
     }
@@ -1872,10 +1896,12 @@ public:
 
         // TODO: the worklist handling looks a bit inefficient... check if there is something better
         _worklist.clear();
-        for (int i = 0, ei = function->basicBlocks.size(); i != ei; ++i) {
-            BasicBlock *bb = function->basicBlocks[i];
+        for (int i = 0, ei = function->basicBlockCount(); i != ei; ++i) {
+            BasicBlock *bb = function->basicBlock(i);
+            if (bb->isRemoved())
+                continue;
             if (i == 0 || !bb->in.isEmpty())
-                foreach (Stmt *s, bb->statements)
+                foreach (Stmt *s, bb->statements())
                     if (!s->asJump())
                         _worklist.insert(s);
         }
@@ -2305,6 +2331,10 @@ void convertConst(Const *c, Type targetType)
     case BoolType:
         c->value = !(c->value == 0 || std::isnan(c->value));
         break;
+    case NullType:
+    case UndefinedType:
+        c->value = qSNaN();
+        c->type = targetType;
     default:
         Q_UNIMPLEMENTED();
         Q_ASSERT(!"Unimplemented!");
@@ -2369,10 +2399,12 @@ public:
 
     void run(IR::Function *f) {
         _f = f;
-        foreach (BasicBlock *bb, f->basicBlocks) {
+        foreach (BasicBlock *bb, f->basicBlocks()) {
+            if (bb->isRemoved())
+                continue;
             _conversions.clear();
 
-            foreach (Stmt *s, bb->statements) {
+            foreach (Stmt *s, bb->statements()) {
                 _currStmt = s;
                 s->accept(this);
             }
@@ -2403,11 +2435,9 @@ public:
                     if (Phi *phi = conversion.stmt->asPhi()) {
                         int idx = phi->d->incoming.indexOf(t);
                         Q_ASSERT(idx != -1);
-                        QVector<Stmt *> &stmts = bb->in[idx]->statements;
-                        stmts.insert(stmts.size() - 1, convCall);
+                        bb->in[idx]->insertStatementBeforeTerminator(convCall);
                     } else {
-                        int idx = bb->statements.indexOf(conversion.stmt);
-                        bb->statements.insert(idx, convCall);
+                        bb->insertStatementBefore(conversion.stmt, convCall);
                     }
 
                     *conversion.expr = source;
@@ -2428,9 +2458,7 @@ public:
                         _defUses.removeUse(move, *unopOperand);
                     }
 
-                    int idx = bb->statements.indexOf(conversion.stmt);
-                    Q_ASSERT(idx != -1);
-                    bb->statements.insert(idx, extraMove);
+                    bb->insertStatementBefore(conversion.stmt, extraMove);
 
                     *conversion.expr = bb->CONVERT(tmp, conversion.targetType);
                     _defUses.addUse(*tmp, move);
@@ -2562,56 +2590,55 @@ protected:
 
 void splitCriticalEdges(IR::Function *f, DominatorTree &df)
 {
-    for (int i = 0, ei = f->basicBlocks.size(); i != ei; ++i) {
-        BasicBlock *bb = f->basicBlocks[i];
-        if (bb->in.size() > 1) {
-            for (int inIdx = 0, eInIdx = bb->in.size(); inIdx != eInIdx; ++inIdx) {
-                BasicBlock *inBB = bb->in[inIdx];
-                if (inBB->out.size() > 1) { // this should have been split!
-                    int newIndex = f->basicBlocks.last()->index + 1;
-#if defined(SHOW_SSA)
-                    qDebug() << "Splitting edge from block" << inBB->index << "to block" << bb->index << "by introducing block" << newIndex;
-#endif
+    foreach (BasicBlock *bb, f->basicBlocks()) {
+        if (bb->isRemoved())
+            continue;
+        if (bb->in.size() < 2)
+            continue;
 
-                    BasicBlock *containingGroup = inBB->isGroupStart() ? inBB : inBB->containingGroup();
+        for (int inIdx = 0, eInIdx = bb->in.size(); inIdx != eInIdx; ++inIdx) {
+            BasicBlock *inBB = bb->in[inIdx];
+            if (inBB->out.size() < 2)
+                continue;
 
-                    // create the basic block:
-                    BasicBlock *newBB = new BasicBlock(f, containingGroup, bb->catchBlock);
-                    newBB->index = newIndex;
-                    f->basicBlocks.append(newBB);
-                    Jump *s = f->New<Jump>();
-                    s->init(bb);
-                    newBB->statements.append(s);
+            // We found a critical edge.
+            BasicBlock *containingGroup = inBB->isGroupStart() ? inBB : inBB->containingGroup();
 
-                    // rewire the old outgoing edge
-                    int outIdx = inBB->out.indexOf(bb);
-                    inBB->out[outIdx] = newBB;
-                    newBB->in.append(inBB);
+            // create the basic block:
+            BasicBlock *newBB = f->newBasicBlock(containingGroup, bb->catchBlock);
+            Jump *s = f->New<Jump>();
+            s->init(bb);
+            newBB->appendStatement(s);
 
-                    // rewire the old incoming edge
-                    bb->in[inIdx] = newBB;
-                    newBB->out.append(bb);
+            // rewire the old outgoing edge
+            int outIdx = inBB->out.indexOf(bb);
+            inBB->out[outIdx] = newBB;
+            newBB->in.append(inBB);
 
-                    // patch the terminator
-                    Stmt *terminator = inBB->terminator();
-                    if (Jump *j = terminator->asJump()) {
-                        Q_ASSERT(outIdx == 0);
-                        j->target = newBB;
-                    } else if (CJump *j = terminator->asCJump()) {
-                        if (outIdx == 0)
-                            j->iftrue = newBB;
-                        else if (outIdx == 1)
-                            j->iffalse = newBB;
-                        else
-                            Q_ASSERT(!"Invalid out edge index for CJUMP!");
-                    } else {
-                        Q_ASSERT(!"Unknown terminator!");
-                    }
+            // rewire the old incoming edge
+            bb->in[inIdx] = newBB;
+            newBB->out.append(bb);
 
-                    // Set the immediate dominator of the new block to inBB
-                    df.updateImmediateDominator(newBB, inBB);
-                }
+            // patch the terminator
+            Stmt *terminator = inBB->terminator();
+            if (Jump *j = terminator->asJump()) {
+                Q_ASSERT(outIdx == 0);
+                j->target = newBB;
+            } else if (CJump *j = terminator->asCJump()) {
+                if (outIdx == 0)
+                    j->iftrue = newBB;
+                else if (outIdx == 1)
+                    j->iffalse = newBB;
+                else
+                    Q_ASSERT(!"Invalid out edge index for CJUMP!");
+            } else if (terminator->asRet()) {
+                Q_ASSERT(!"A block with a RET at the end cannot have outgoing edges.");
+            } else {
+                Q_ASSERT(!"Unknown terminator!");
             }
+
+            // Set the immediate dominator of the new block to inBB
+            df.updateImmediateDominator(newBB, inBB);
         }
     }
 }
@@ -2704,6 +2731,7 @@ class BlockScheduler
 
     void emitBlock(BasicBlock *bb)
     {
+        Q_ASSERT(!bb->isRemoved());
         if (emitted.alreadyProcessed(bb))
             return;
 
@@ -2751,22 +2779,24 @@ public:
     BlockScheduler(IR::Function *function, const DominatorTree &dominatorTree)
         : function(function)
         , dominatorTree(dominatorTree)
-        , emitted(function->basicBlocks)
+        , sequence(0)
+        , emitted(function)
     {}
 
     QHash<BasicBlock *, BasicBlock *> go()
     {
         showMeTheCode(function);
-        schedule(function->basicBlocks.first());
+        schedule(function->basicBlock(0));
 
 #if defined(SHOW_SSA)
         qDebug() << "Block sequence:";
         foreach (BasicBlock *bb, sequence)
-            qDebug("\tL%d", bb->index);
+            qDebug("\tL%d", bb->index());
 #endif // SHOW_SSA
 
-        Q_ASSERT(function->basicBlocks.size() == sequence.size());
-        function->basicBlocks = sequence;
+        Q_ASSERT(function->liveBasicBlocksCount() == sequence.size());
+        function->setScheduledBlocks(sequence);
+        function->renumberBasicBlocks();
         return loopsStartEnd;
     }
 };
@@ -2778,7 +2808,7 @@ void checkCriticalEdges(QVector<BasicBlock *> basicBlocks) {
             foreach (BasicBlock *bb2, bb->out) {
                 if (bb2 && bb2->in.size() > 1) {
                     qout << "found critical edge between block "
-                         << bb->index << " and block " << bb2->index;
+                         << bb->index() << " and block " << bb2->index();
                     Q_ASSERT(false);
                 }
             }
@@ -2787,7 +2817,7 @@ void checkCriticalEdges(QVector<BasicBlock *> basicBlocks) {
 }
 #endif
 
-void cleanupBasicBlocks(IR::Function *function, bool renumber)
+void cleanupBasicBlocks(IR::Function *function)
 {
     showMeTheCode(function);
 
@@ -2796,12 +2826,12 @@ void cleanupBasicBlocks(IR::Function *function, bool renumber)
     // blocks.
     QSet<BasicBlock *> postponed, done;
     QSet<BasicBlock *> toRemove;
-    toRemove.reserve(function->basicBlocks.size());
-    done.reserve(function->basicBlocks.size());
+    toRemove.reserve(function->basicBlockCount());
+    done.reserve(function->basicBlockCount());
     postponed.reserve(8);
-    for (int i = 0, ei = function->basicBlocks.size(); i != ei; ++i) {
-        BasicBlock *bb = function->basicBlocks[i];
-        if (i == 0 || bb->isExceptionHandler)
+    for (int i = 0, ei = function->basicBlockCount(); i != ei; ++i) {
+        BasicBlock *bb = function->basicBlock(i);
+        if (i == 0 || bb->isExceptionHandler())
             postponed.insert(bb);
         else
             toRemove.insert(bb);
@@ -2831,7 +2861,7 @@ void cleanupBasicBlocks(IR::Function *function, bool renumber)
             int idx = outBB->in.indexOf(bb);
             if (idx != -1) {
                 outBB->in.remove(idx);
-                foreach (Stmt *s, outBB->statements) {
+                foreach (Stmt *s, outBB->statements()) {
                     if (Phi *phi = s->asPhi())
                         phi->d->incoming.remove(idx);
                     else
@@ -2840,17 +2870,8 @@ void cleanupBasicBlocks(IR::Function *function, bool renumber)
             }
         }
 
-        foreach (Stmt *s, bb->statements)
-            s->destroyData();
-        int idx = function->basicBlocks.indexOf(bb);
-        if (idx != -1)
-            function->basicBlocks.remove(idx);
-        delete bb;
+        function->removeBasicBlock(bb);
     }
-
-    if (renumber)
-        for (int i = 0; i < function->basicBlocks.size(); ++i)
-            function->basicBlocks[i]->index = i;
 
     showMeTheCode(function);
 }
@@ -2991,6 +3012,11 @@ private:
             }
         }
 
+        if (e1->type == IR::NullType && e2->type == IR::NullType)
+            return true;
+        if (e1->type == IR::UndefinedType && e2->type == IR::UndefinedType)
+            return true;
+
         return false;
     }
 };
@@ -3003,28 +3029,24 @@ namespace {
 void purgeBB(BasicBlock *bb, IR::Function *func, DefUsesCalculator &defUses, StatementWorklist &W,
              DominatorTree &df)
 {
-    // TODO: change this to mark the block as deleted, but leave it alone so that other references
-    //       won't be dangling pointers.
     // TODO: after the change above: if we keep on detaching the block from predecessors or
     //       successors, update the DominatorTree too.
 
     // don't purge blocks that are entry points for catch statements. They might not be directly
     // connected, but are required anyway
-    if (bb->isExceptionHandler)
+    if (bb->isExceptionHandler())
         return;
 
     QVector<BasicBlock *> toPurge;
+    toPurge.reserve(8);
     toPurge.append(bb);
 
     while (!toPurge.isEmpty()) {
         bb = toPurge.first();
         toPurge.removeFirst();
 
-        int bbIdx = func->basicBlocks.indexOf(bb);
-        if (bbIdx == -1)
+        if (bb->isRemoved())
             continue;
-        else
-            func->basicBlocks.remove(bbIdx);
 
         // unlink all incoming edges
         foreach (BasicBlock *in, bb->in) {
@@ -3038,7 +3060,7 @@ void purgeBB(BasicBlock *bb, IR::Function *func, DefUsesCalculator &defUses, Sta
             int idx = out->in.indexOf(bb);
             if (idx != -1) {
                 out->in.remove(idx);
-                foreach (Stmt *outStmt, out->statements) {
+                foreach (Stmt *outStmt, out->statements()) {
                     if (!outStmt)
                         continue;
                     if (Phi *phi = outStmt->asPhi()) {
@@ -3063,19 +3085,15 @@ void purgeBB(BasicBlock *bb, IR::Function *func, DefUsesCalculator &defUses, Sta
         }
 
         // unlink all defs/uses from the statements in the basic block
-        foreach (Stmt *s, bb->statements) {
+        foreach (Stmt *s, bb->statements()) {
             if (!s)
                 continue;
 
             W += defUses.removeDefUses(s);
             W -= s;
-
-            // clean-up the statement's data
-            s->destroyData();
         }
-        bb->statements.clear();
 
-        delete bb;
+        func->removeBasicBlock(bb);
     }
 }
 
@@ -3116,18 +3134,20 @@ bool tryOptimizingComparison(Expr *&expr)
         expr = leftConst;
         return true;
     case OpStrictEqual:
-        if (!strictlyEqualTypes(leftConst->type, rightConst->type))
-            return false;
-        // intentional fall-through
+        leftConst->value = Runtime::compareStrictEqual(&l, &r);
+        leftConst->type = BoolType;
+        expr = leftConst;
+        return true;
     case OpEqual:
         leftConst->value = Runtime::compareEqual(&l, &r);
         leftConst->type = BoolType;
         expr = leftConst;
         return true;
     case OpStrictNotEqual:
-        if (!strictlyEqualTypes(leftConst->type, rightConst->type))
-            return false;
-        // intentional fall-through
+        leftConst->value = Runtime::compareStrictNotEqual(&l, &r);
+        leftConst->type = BoolType;
+        expr = leftConst;
+        return true;
     case OpNotEqual:
         leftConst->value = Runtime::compareNotEqual(&l, &r);
         leftConst->type = BoolType;
@@ -3214,13 +3234,9 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
 
                 // constant propagation:
                 if (Const *sourceConst = m->source->asConst()) {
-                    if (sourceConst->type & NumberType || sourceConst->type == BoolType) {
-                        // TODO: when propagating other constants, e.g. undefined, the other
-                        // optimization passes have to be changed to cope with them.
-                        W += replaceUses(targetTemp, sourceConst);
-                        defUses.removeDef(*targetTemp);
-                        W.clear(s);
-                    }
+                    W += replaceUses(targetTemp, sourceConst);
+                    defUses.removeDef(*targetTemp);
+                    W.clear(s);
                     continue;
                 }
                 if (Member *member = m->source->asMember()) {
@@ -3514,16 +3530,19 @@ protected:
 class LifeRanges {
     typedef QSet<Temp> LiveRegs;
 
-    QHash<BasicBlock *, LiveRegs> _liveIn;
+    QVector<LiveRegs> _liveIn;
     QHash<Temp, LifeTimeInterval> _intervals;
-    QVector<LifeTimeInterval> _sortedRanges;
+    typedef QVector<LifeTimeInterval> LifeTimeIntervals;
+    LifeTimeIntervals _sortedIntervals;
 
 public:
     LifeRanges(IR::Function *function, const QHash<BasicBlock *, BasicBlock *> &startEndLoops)
     {
+        _liveIn.resize(function->basicBlockCount());
+
         int id = 0;
-        foreach (BasicBlock *bb, function->basicBlocks) {
-            foreach (Stmt *s, bb->statements) {
+        foreach (BasicBlock *bb, function->basicBlocks()) {
+            foreach (Stmt *s, bb->statements()) {
                 if (s->asPhi())
                     s->id = id + 1;
                 else
@@ -3531,34 +3550,34 @@ public:
             }
         }
 
-        for (int i = function->basicBlocks.size() - 1; i >= 0; --i) {
-            BasicBlock *bb = function->basicBlocks[i];
+        for (int i = function->basicBlockCount() - 1; i >= 0; --i) {
+            BasicBlock *bb = function->basicBlock(i);
             buildIntervals(bb, startEndLoops.value(bb, 0), function);
         }
 
-        _sortedRanges.reserve(_intervals.size());
+        _sortedIntervals.reserve(_intervals.size());
         for (QHash<Temp, LifeTimeInterval>::const_iterator i = _intervals.begin(), ei = _intervals.end(); i != ei; ++i) {
-            LifeTimeInterval range = i.value();
-            range.setTemp(i.key());
-            _sortedRanges.append(range);
+            LifeTimeIntervals::iterator lti = _sortedIntervals.insert(_sortedIntervals.end(), i.value());
+            lti->setTemp(i.key());
         }
-        std::sort(_sortedRanges.begin(), _sortedRanges.end(), LifeTimeInterval::lessThan);
+        std::sort(_sortedIntervals.begin(), _sortedIntervals.end(), LifeTimeInterval::lessThan);
+        _intervals.clear();
     }
 
-    QVector<LifeTimeInterval> ranges() const { return _sortedRanges; }
+    QVector<LifeTimeInterval> intervals() const { return _sortedIntervals; }
 
     void dump() const
     {
         qout << "Life ranges:" << endl;
         qout << "Intervals:" << endl;
-        foreach (const LifeTimeInterval &range, _sortedRanges) {
+        foreach (const LifeTimeInterval &range, _sortedIntervals) {
             range.dump(qout);
             qout << endl;
         }
 
-        foreach (BasicBlock *bb, _liveIn.keys()) {
-            qout << "L" << bb->index <<" live-in: ";
-            QList<Temp> live = QList<Temp>::fromSet(_liveIn.value(bb));
+        for (int i = 0, ei = _liveIn.size(); i != ei; ++i) {
+            qout << "L" << i <<" live-in: ";
+            QList<Temp> live = QList<Temp>::fromSet(_liveIn.at(i));
             std::sort(live.begin(), live.end());
             for (int i = 0; i < live.size(); ++i) {
                 if (i > 0) qout << ", ";
@@ -3573,11 +3592,11 @@ private:
     {
         LiveRegs live;
         foreach (BasicBlock *successor, bb->out) {
-            live.unite(_liveIn[successor]);
+            live.unite(_liveIn[successor->index()]);
             const int bbIndex = successor->in.indexOf(bb);
             Q_ASSERT(bbIndex >= 0);
 
-            foreach (Stmt *s, successor->statements) {
+            foreach (Stmt *s, successor->statements()) {
                 if (Phi *phi = s->asPhi()) {
                     if (Temp *t = phi->d->incoming[bbIndex]->asTemp())
                         live.insert(*t);
@@ -3587,12 +3606,14 @@ private:
             }
         }
 
+        QVector<Stmt *> statements = bb->statements();
+
         foreach (const Temp &opd, live)
-            _intervals[opd].addRange(bb->statements.first()->id, bb->statements.last()->id);
+            _intervals[opd].addRange(statements.first()->id, statements.last()->id);
 
         InputOutputCollector collector(function);
-        for (int i = bb->statements.size() - 1; i >= 0; --i) {
-            Stmt *s = bb->statements[i];
+        for (int i = statements.size() - 1; i >= 0; --i) {
+            Stmt *s = statements[i];
             if (Phi *phi = s->asPhi()) {
                 LiveRegs::iterator it = live.find(*phi->targetTemp);
                 if (it == live.end()) {
@@ -3609,19 +3630,30 @@ private:
                 live.remove(opd);
             }
             foreach (const Temp &opd, collector.inputs) {
-                _intervals[opd].addRange(bb->statements.first()->id, s->id);
+                _intervals[opd].addRange(statements.first()->id, s->id);
                 live.insert(opd);
             }
         }
 
         if (loopEnd) { // Meaning: bb is a loop header, because loopEnd is set to non-null.
             foreach (const Temp &opd, live)
-                _intervals[opd].addRange(bb->statements.first()->id, loopEnd->statements.last()->id);
+                _intervals[opd].addRange(statements.first()->id, loopEnd->terminator()->id);
         }
 
-        _liveIn[bb] = live;
+        _liveIn[bb->index()] = live;
     }
 };
+
+void removeUnreachleBlocks(IR::Function *function)
+{
+    QVector<BasicBlock *> newSchedule;
+    newSchedule.reserve(function->basicBlockCount());
+    foreach (BasicBlock *bb, function->basicBlocks())
+        if (!bb->isRemoved())
+            newSchedule.append(bb);
+    function->setScheduledBlocks(newSchedule);
+    function->renumberBasicBlocks();
+}
 } // anonymous namespace
 
 void LifeTimeInterval::setFrom(Stmt *from) {
@@ -3684,8 +3716,8 @@ LifeTimeInterval LifeTimeInterval::split(int atPosition, int newStart)
 
     // search where to split the interval
     for (int i = 0, ei = _ranges.size(); i < ei; ++i) {
-        if (_ranges[i].start <= atPosition) {
-            if (_ranges[i].end >= atPosition) {
+        if (_ranges.at(i).start <= atPosition) {
+            if (_ranges.at(i).end >= atPosition) {
                 // split happens in the middle of a range. Keep this range in both the old and the
                 // new interval, and correct the end/start later
                 _ranges.resize(i + 1);
@@ -3767,6 +3799,11 @@ bool LifeTimeInterval::lessThanForTemp(const LifeTimeInterval &r1, const LifeTim
     return r1.temp() < r2.temp();
 }
 
+Optimizer::Optimizer(IR::Function *function)
+    : function(function)
+    , inSSA(false)
+{}
+
 void Optimizer::run(QQmlEnginePrivate *qmlEngine)
 {
 #if defined(SHOW_SSA)
@@ -3774,12 +3811,9 @@ void Optimizer::run(QQmlEnginePrivate *qmlEngine)
          << " with " << function->basicBlocks.size() << " basic blocks." << endl << flush;
 #endif
 
-    // Number all basic blocks, so we have nice numbers in the dumps:
-    for (int i = 0; i < function->basicBlocks.size(); ++i)
-        function->basicBlocks[i]->index = i;
 //    showMeTheCode(function);
 
-    cleanupBasicBlocks(function, true);
+    cleanupBasicBlocks(function);
 
     function->removeSharedExpressions();
 
@@ -3791,7 +3825,7 @@ void Optimizer::run(QQmlEnginePrivate *qmlEngine)
 //        qout << "SSA for " << (function->name ? qPrintable(*function->name) : "<anonymous>") << endl;
 
         // Calculate the dominator tree:
-        DominatorTree df(function->basicBlocks);
+        DominatorTree df(function);
 
 //        qout << "Converting to SSA..." << endl;
         convertToSSA(function, df);
@@ -3836,21 +3870,22 @@ void Optimizer::run(QQmlEnginePrivate *qmlEngine)
         // condition is calculated to be always false) are not yet removed. This will choke the
         // block scheduling, so remove those now.
 //        qout << "Cleaning up unreachable basic blocks..." << endl;
-        cleanupBasicBlocks(function, false);
+        cleanupBasicBlocks(function);
 //        showMeTheCode(function);
 
 //        qout << "Doing block scheduling..." << endl;
 //        df.dumpImmediateDominators();
         startEndLoops = BlockScheduler(function, df).go();
-//        showMeTheCode(function);
+        showMeTheCode(function);
 
 #ifndef QT_NO_DEBUG
-        checkCriticalEdges(function->basicBlocks);
+        checkCriticalEdges(function->basicBlocks());
 #endif
 
 //        qout << "Finished SSA." << endl;
         inSSA = true;
     } else {
+        removeUnreachleBlocks(function);
         inSSA = false;
     }
 }
@@ -3861,13 +3896,13 @@ void Optimizer::convertOutOfSSA() {
 
     // There should be no critical edges at this point.
 
-    foreach (BasicBlock *bb, function->basicBlocks) {
+    foreach (BasicBlock *bb, function->basicBlocks()) {
         MoveMapping moves;
 
         foreach (BasicBlock *successor, bb->out) {
             const int inIdx = successor->in.indexOf(bb);
             Q_ASSERT(inIdx >= 0);
-            foreach (Stmt *s, successor->statements) {
+            foreach (Stmt *s, successor->statements()) {
                 if (Phi *phi = s->asPhi()) {
                     moves.add(clone(phi->d->incoming[inIdx], function),
                               clone(phi->targetTemp, function)->asTemp());
@@ -3893,11 +3928,10 @@ void Optimizer::convertOutOfSSA() {
         moves.insertMoves(bb, function, true);
     }
 
-    foreach (BasicBlock *bb, function->basicBlocks) {
-        while (!bb->statements.isEmpty()) {
-            if (Phi *phi = bb->statements.first()->asPhi()) {
-                phi->destroyData();
-                bb->statements.removeFirst();
+    foreach (BasicBlock *bb, function->basicBlocks()) {
+        while (!bb->isEmpty()) {
+            if (bb->statements().first()->asPhi()) {
+                bb->removeStatement(0);
             } else {
                 break;
             }
@@ -3905,14 +3939,14 @@ void Optimizer::convertOutOfSSA() {
     }
 }
 
-QVector<LifeTimeInterval> Optimizer::lifeRanges() const
+QVector<LifeTimeInterval> Optimizer::lifeTimeIntervals() const
 {
     Q_ASSERT(isInSSA());
 
     LifeRanges lifeRanges(function, startEndLoops);
 //    lifeRanges.dump();
 //    showMeTheCode(function);
-    return lifeRanges.ranges();
+    return lifeRanges.intervals();
 }
 
 QSet<Jump *> Optimizer::calculateOptionalJumps()
@@ -3920,16 +3954,18 @@ QSet<Jump *> Optimizer::calculateOptionalJumps()
     QSet<Jump *> optional;
     QSet<BasicBlock *> reachableWithoutJump;
 
-    const int maxSize = function->basicBlocks.size();
+    const int maxSize = function->basicBlockCount();
     optional.reserve(maxSize);
     reachableWithoutJump.reserve(maxSize);
 
-    for (int i = function->basicBlocks.size() - 1; i >= 0; --i) {
-        BasicBlock *bb = function->basicBlocks[i];
+    for (int i = maxSize - 1; i >= 0; --i) {
+        BasicBlock *bb = function->basicBlock(i);
+        if (bb->isRemoved())
+            continue;
 
-        if (Jump *jump = bb->statements.last()->asJump()) {
+        if (Jump *jump = bb->statements().last()->asJump()) {
             if (reachableWithoutJump.contains(jump->target)) {
-                if (bb->statements.size() > 1)
+                if (bb->statements().size() > 1)
                     reachableWithoutJump.clear();
                 optional.insert(jump);
                 reachableWithoutJump.insert(bb);
@@ -4044,12 +4080,12 @@ QList<IR::Move *> MoveMapping::insertMoves(BasicBlock *bb, IR::Function *functio
     QList<IR::Move *> newMoves;
     newMoves.reserve(_moves.size());
 
-    int insertionPoint = atEnd ? bb->statements.size() - 1 : 0;
+    int insertionPoint = atEnd ? bb->statements().size() - 1 : 0;
     foreach (const Move &m, _moves) {
         IR::Move *move = function->New<IR::Move>();
         move->init(clone(m.to, function), clone(m.from, function));
         move->swap = m.needsSwap;
-        bb->statements.insert(insertionPoint++, move);
+        bb->insertStatementBefore(insertionPoint++, move);
         newMoves.append(move);
     }
 

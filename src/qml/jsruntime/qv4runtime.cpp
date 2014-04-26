@@ -215,7 +215,7 @@ void RuntimeHelpers::numberToString(QString *result, double num, int radix)
         *result = QStringLiteral("NaN");
         return;
     } else if (qIsInf(num)) {
-        *result = QLatin1String(num < 0 ? "-Infinity" : "Infinity");
+        *result = num < 0 ? QStringLiteral("-Infinity") : QStringLiteral("Infinity");
         return;
     }
 
@@ -264,7 +264,7 @@ ReturnedValue Runtime::closure(ExecutionContext *ctx, int functionId)
 {
     QV4::Function *clos = ctx->compilationUnit->runtimeFunctions[functionId];
     Q_ASSERT(clos);
-    FunctionObject *f = FunctionObject::creatScriptFunction(ctx, clos);
+    FunctionObject *f = FunctionObject::createScriptFunction(ctx, clos);
     return f->asReturnedValue();
 }
 
@@ -300,6 +300,9 @@ ReturnedValue Runtime::deleteName(ExecutionContext *ctx, const StringRef name)
 
 QV4::ReturnedValue Runtime::instanceof(ExecutionContext *ctx, const ValueRef left, const ValueRef right)
 {
+    // As nothing in this method can call into the memory manager, avoid using a Scope
+    // for performance reasons
+
     FunctionObject *f = right->asFunctionObject();
     if (!f)
         return ctx->throwTypeError();
@@ -307,23 +310,20 @@ QV4::ReturnedValue Runtime::instanceof(ExecutionContext *ctx, const ValueRef lef
     if (f->subtype == FunctionObject::BoundFunction)
         f = static_cast<BoundFunction *>(f)->target;
 
-    Scope scope(ctx->engine);
-    ScopedObject v(scope, left);
+    Object *v = left->asObject();
     if (!v)
         return Encode(false);
 
-    Scoped<Object> o(scope, f->protoProperty());
-    if (!o) {
-        scope.engine->currentContext()->throwTypeError();
-        return Encode(false);
-    }
+    Object *o = QV4::Value::fromReturnedValue(f->protoProperty()).asObject();
+    if (!o)
+        return ctx->throwTypeError();
 
     while (v) {
         v = v->prototype();
 
-        if (! v)
+        if (!v)
             break;
-        else if (o.getPointer() == v)
+        else if (o == v)
             return Encode(true);
     }
 
@@ -632,7 +632,7 @@ ReturnedValue Runtime::foreachIterator(ExecutionContext *ctx, const ValueRef in)
     Scope scope(ctx);
     Scoped<Object> o(scope, (Object *)0);
     if (!in->isNullOrUndefined())
-        o = in;
+        o = in->toObject(ctx);
     Scoped<Object> it(scope, ctx->engine->newForEachIteratorObject(ctx, o));
     return it.asReturnedValue();
 }
@@ -1230,6 +1230,8 @@ ReturnedValue Runtime::getQmlIdArray(NoThrowContext *ctx)
 ReturnedValue Runtime::getQmlContextObject(NoThrowContext *ctx)
 {
     QQmlContextData *context = QmlContextWrapper::callingContext(ctx->engine);
+    if (!context)
+        return Encode::undefined();
     return QObjectWrapper::wrap(ctx->engine, context->contextObject);
 }
 
@@ -1277,6 +1279,8 @@ void Runtime::setQmlQObjectProperty(ExecutionContext *ctx, const ValueRef object
 ReturnedValue Runtime::getQmlImportedScripts(NoThrowContext *ctx)
 {
     QQmlContextData *context = QmlContextWrapper::callingContext(ctx->engine);
+    if (!context)
+        return Encode::undefined();
     return context->importedScripts.value();
 }
 

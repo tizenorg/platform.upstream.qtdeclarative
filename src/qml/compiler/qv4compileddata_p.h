@@ -50,6 +50,10 @@
 
 QT_BEGIN_NAMESPACE
 
+namespace QmlIR {
+struct Document;
+}
+
 namespace QV4 {
 namespace IR {
 struct Function;
@@ -163,12 +167,14 @@ struct Unit
     char magic[8];
     qint16 architecture;
     qint16 version;
+    quint32 unitSize; // Size of the Unit and any depending data. Does _not_ include size of data needed by QmlUnit.
 
     enum {
         IsJavascript = 0x1,
         IsQml = 0x2,
         StaticData = 0x4, // Unit data persistent in memory?
-        IsSingleton = 0x8
+        IsSingleton = 0x8,
+        IsSharedLibrary = 0x10 // .pragma shared?
     };
     quint32 flags;
     uint stringTableSize;
@@ -190,6 +196,8 @@ struct Unit
         const uint *offsetTable = reinterpret_cast<const uint*>((reinterpret_cast<const char *>(this)) + offsetToStringTable);
         const uint offset = offsetTable[idx];
         const String *str = reinterpret_cast<const String*>(reinterpret_cast<const char *>(this) + offset);
+        if (str->str.size == 0)
+            return QString();
         QStringDataPtr holder = { const_cast<QStringData *>(static_cast<const QStringData*>(&str->str)) };
         QString qstr(holder);
         if (flags & StaticData)
@@ -197,8 +205,10 @@ struct Unit
         return QString(qstr.constData(), qstr.length());
     }
 
+    const uint *functionOffsetTable() const { return reinterpret_cast<const uint*>((reinterpret_cast<const char *>(this)) + offsetToFunctionTable); }
+
     const Function *functionAt(int idx) const {
-        const uint *offsetTable = reinterpret_cast<const uint*>((reinterpret_cast<const char *>(this)) + offsetToFunctionTable);
+        const uint *offsetTable = functionOffsetTable();
         const uint offset = offsetTable[idx];
         return reinterpret_cast<const Function*>(reinterpret_cast<const char *>(this) + offset);
     }
@@ -220,10 +230,10 @@ struct Unit
         return reinterpret_cast<const JSClassMember*>(ptr + sizeof(JSClass));
     }
 
-    static int calculateSize(uint headerSize, uint nStrings, uint nFunctions, uint nRegExps, uint nConstants,
+    static int calculateSize(uint headerSize, uint nFunctions, uint nRegExps, uint nConstants,
                              uint nLookups, uint nClasses) {
         return (headerSize
-                + (nStrings + nFunctions + nClasses) * sizeof(uint)
+                + (nFunctions + nClasses) * sizeof(uint)
                 + nRegExps * RegExp::calculateSize()
                 + nConstants * sizeof(QV4::ReturnedValue)
                 + nLookups * Lookup::calculateSize()
@@ -523,6 +533,7 @@ struct Import
 struct QmlUnit
 {
     Unit header;
+    quint32 qmlUnitSize; // size including header and all surrounding data.
     quint32 nImports;
     quint32 offsetToImports;
     quint32 nObjects;
@@ -577,15 +588,14 @@ struct Q_QML_EXPORT CompilationUnit
     QV4::Value *runtimeRegularExpressions;
     QV4::InternalClass **runtimeClasses;
     QVector<QV4::Function *> runtimeFunctions;
-//    QVector<QV4::Function *> runtimeFunctionsSortedByAddress;
+
+    // Called only when building QML, when we build the header for JS first and append QML data
+    virtual QV4::CompiledData::Unit *createUnitData(QmlIR::Document *irDocument);
 
     QV4::Function *linkToEngine(QV4::ExecutionEngine *engine);
     void unlink();
 
     virtual QV4::ExecutableAllocator::ChunkOfPages *chunkForFunction(int /*functionIndex*/) { return 0; }
-
-    // ### runtime data
-    // pointer to qml data for QML unit
 
     void markObjects(QV4::ExecutionEngine *e);
 
