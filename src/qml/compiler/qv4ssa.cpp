@@ -54,9 +54,6 @@
 #include <QtCore/QLinkedList>
 #include <QtCore/QStack>
 #include <qv4runtime_p.h>
-#include <qv4context_p.h>
-#include <private/qqmlpropertycache_p.h>
-#include <private/qqmlengine_p.h>
 #include <cmath>
 #include <iostream>
 #include <cassert>
@@ -1278,7 +1275,8 @@ public:
 
 private:
     IR::Function *function;
-    QHash<UntypedTemp, DefUse> _defUses;
+    typedef QHash<UntypedTemp, DefUse> DefUses;
+    DefUses _defUses;
     QHash<Stmt *, QList<Temp> > _usesPerStatement;
 
     BasicBlock *_block;
@@ -1374,8 +1372,16 @@ public:
     QList<Temp> usedVars(Stmt *s) const
     { return _usesPerStatement[s]; }
 
-    QList<Stmt *> uses(const UntypedTemp &var) const
-    { return _defUses[var].uses; }
+    const QList<Stmt *> &uses(const UntypedTemp &var) const
+    {
+        static const QList<Stmt *> noUses;
+
+        DefUses::const_iterator it = _defUses.find(var);
+        if (it == _defUses.end())
+            return noUses;
+        else
+            return it->uses;
+    }
 
     QVector<Stmt*> removeDefUses(Stmt *s)
     {
@@ -1506,6 +1512,8 @@ class StatementWorklist
     QBitArray inWorklist;
     QSet<Stmt *> removed;
     QHash<Stmt*,Stmt*> replaced;
+
+    Q_DISABLE_COPY(StatementWorklist)
 
 public:
     StatementWorklist(IR::Function *function)
@@ -1873,8 +1881,9 @@ class TypeInference: public StmtVisitor, public ExprVisitor {
     QQmlEnginePrivate *qmlEngine;
     IR::Function *function;
     const DefUsesCalculator &_defUses;
-    QHash<Temp, DiscoveredType> _tempTypes;
-    QSet<Stmt *> _worklist;
+    typedef QHash<Temp, DiscoveredType> TempTypes;
+    TempTypes _tempTypes;
+    QList<Stmt *> _worklist;
     struct TypingResult {
         DiscoveredType type;
         bool fullyTyped;
@@ -1901,23 +1910,24 @@ public:
             if (bb->isRemoved())
                 continue;
             if (i == 0 || !bb->in.isEmpty())
-                foreach (Stmt *s, bb->statements())
-                    if (!s->asJump())
-                        _worklist.insert(s);
+                _worklist += bb->statements().toList();
         }
 
         while (!_worklist.isEmpty()) {
-            QList<Stmt *> worklist = _worklist.values();
+            QList<Stmt *> worklist = QSet<Stmt *>::fromList(_worklist).toList();
             _worklist.clear();
             while (!worklist.isEmpty()) {
                 Stmt *s = worklist.first();
                 worklist.removeFirst();
+                if (s->asJump())
+                    continue;
+
 #if defined(SHOW_SSA)
                 qout<<"Typing stmt ";s->dump(qout);qout<<endl;
 #endif
 
                 if (!run(s)) {
-                    _worklist.insert(s);
+                    _worklist += s;
 #if defined(SHOW_SSA)
                     qout<<"Pushing back stmt: ";
                     s->dump(qout);qout<<endl;
@@ -1968,8 +1978,11 @@ private:
 #endif
             if (isAlwaysVar(t))
                 ty = DiscoveredType(VarType);
-            if (_tempTypes[*t] != ty) {
-                _tempTypes[*t] = ty;
+            TempTypes::iterator it = _tempTypes.find(*t);
+            if (it == _tempTypes.end())
+                it = _tempTypes.insert(*t, DiscoveredType());
+            if (it.value() != ty) {
+                it.value() = ty;
 
 #if defined(SHOW_SSA)
                 foreach (Stmt *s, _defUses.uses(*t)) {
@@ -1979,7 +1992,7 @@ private:
                 }
 #endif
 
-                _worklist += QSet<Stmt *>::fromList(_defUses.uses(*t));
+                _worklist += _defUses.uses(*t);
             }
         } else {
             e->type = (Type) ty.type;
@@ -2269,7 +2282,7 @@ public:
 private:
     bool isUsedAsInt32(const UntypedTemp &t, const QVector<UntypedTemp> &knownOk) const
     {
-        QList<Stmt *> uses = _defUses.uses(t);
+        const QList<Stmt *> &uses = _defUses.uses(t);
         if (uses.isEmpty())
             return false;
 
@@ -2824,39 +2837,38 @@ void cleanupBasicBlocks(IR::Function *function)
     // Algorithm: this is the iterative version of a depth-first search for all blocks that are
     // reachable through outgoing edges, starting with the start block and all exception handler
     // blocks.
-    QSet<BasicBlock *> postponed, done;
-    QSet<BasicBlock *> toRemove;
-    toRemove.reserve(function->basicBlockCount());
-    done.reserve(function->basicBlockCount());
-    postponed.reserve(8);
+    QBitArray reachableBlocks(function->basicBlockCount());
+    QVector<BasicBlock *> postponed;
+    postponed.reserve(16);
     for (int i = 0, ei = function->basicBlockCount(); i != ei; ++i) {
         BasicBlock *bb = function->basicBlock(i);
         if (i == 0 || bb->isExceptionHandler())
-            postponed.insert(bb);
-        else
-            toRemove.insert(bb);
+            postponed.append(bb);
     }
 
     while (!postponed.isEmpty()) {
-        QSet<BasicBlock *>::iterator it = postponed.begin();
-        BasicBlock *bb = *it;
-        postponed.erase(it);
-        done.insert(bb);
+        BasicBlock *bb = postponed.back();
+        postponed.pop_back();
+        if (bb->isRemoved()) // this block was removed before, we don't need to clean it up.
+            continue;
+
+        reachableBlocks.setBit(bb->index());
 
         foreach (BasicBlock *outBB, bb->out) {
-            if (!done.contains(outBB)) {
-                postponed.insert(outBB);
-                toRemove.remove(outBB);
-            }
+            if (!reachableBlocks.at(outBB->index()))
+                postponed.append(outBB);
         }
     }
 
-    foreach (BasicBlock *bb, toRemove) {
+    foreach (BasicBlock *bb, function->basicBlocks()) {
+        if (bb->isRemoved()) // the block has already been removed, so ignore it
+            continue;
+        if (reachableBlocks.at(bb->index())) // the block is reachable, so ignore it
+            continue;
+
         foreach (BasicBlock *outBB, bb->out) {
-            if (toRemove.contains(outBB))
+            if (outBB->isRemoved() || !reachableBlocks.at(outBB->index()))
                 continue; // We do not need to unlink from blocks that are scheduled to be removed.
-                          // Actually, it is potentially dangerous: if that block was already
-                          // destroyed, this could result in a use-after-free.
 
             int idx = outBB->in.indexOf(bb);
             if (idx != -1) {
@@ -2925,7 +2937,7 @@ public:
         , _replacement(0)
     {}
 
-    QVector<Stmt *> operator()(Temp *toReplace, Expr *replacement)
+    void operator()(Temp *toReplace, Expr *replacement, StatementWorklist &W, QList<Stmt *> *newUses = 0)
     {
         Q_ASSERT(replacement->asTemp() || replacement->asConst() || replacement->asName());
 
@@ -2934,20 +2946,22 @@ public:
         qSwap(_toReplace, toReplace);
         qSwap(_replacement, replacement);
 
-        QList<Stmt *> uses = _defUses.uses(*_toReplace);
+        const QList<Stmt *> &uses = _defUses.uses(*_toReplace);
+        if (newUses)
+            newUses->reserve(uses.size());
+
 //        qout << "        " << uses.size() << " uses:"<<endl;
-        QVector<Stmt *> result;
-        result.reserve(uses.size());
         foreach (Stmt *use, uses) {
 //            qout<<"        ";use->dump(qout);qout<<"\n";
             use->accept(this);
 //            qout<<"     -> ";use->dump(qout);qout<<"\n";
-            result.append(use);
+            W += use;
+            if (newUses)
+                newUses->append(use);
         }
 
         qSwap(_replacement, replacement);
         qSwap(_toReplace, toReplace);
-        return result;
     }
 
 protected:
@@ -3174,7 +3188,7 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
         if (Phi *phi = s->asPhi()) {
             // constant propagation:
             if (Const *c = isConstPhi(phi)) {
-                W += replaceUses(phi->targetTemp, c);
+                replaceUses(phi->targetTemp, c, W);
                 defUses.removeDef(*phi->targetTemp);
                 W.clear(s);
                 continue;
@@ -3185,11 +3199,11 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
                 Temp *t = phi->targetTemp;
                 Expr *e = phi->d->incoming.first();
 
-                QVector<Stmt *> newT2Uses = replaceUses(t, e);
-                W += newT2Uses;
+                QList<Stmt *> newT2Uses;
+                replaceUses(t, e, W, &newT2Uses);
                 if (Temp *t2 = e->asTemp()) {
                     defUses.removeUse(s, *t2);
-                    defUses.addUses(*t2, QList<Stmt*>::fromVector(newT2Uses));
+                    defUses.addUses(*t2, newT2Uses);
                 }
                 defUses.removeDef(*t);
                 W.clear(s);
@@ -3234,7 +3248,7 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
 
                 // constant propagation:
                 if (Const *sourceConst = m->source->asConst()) {
-                    W += replaceUses(targetTemp, sourceConst);
+                    replaceUses(targetTemp, sourceConst, W);
                     defUses.removeDef(*targetTemp);
                     W.clear(s);
                     continue;
@@ -3244,7 +3258,7 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
                         Const *c = function->New<Const>();
                         const int enumValue = member->attachedPropertiesIdOrEnumValue;
                         c->init(SInt32Type, enumValue);
-                        W += replaceUses(targetTemp, c);
+                        replaceUses(targetTemp, c, W);
                         defUses.removeDef(*targetTemp);
                         W.clear(s);
                         defUses.removeUse(s, *member->base->asTemp());
@@ -3262,10 +3276,10 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
 
                 // copy propagation:
                 if (Temp *sourceTemp = unescapableTemp(m->source, function)) {
-                    QVector<Stmt *> newT2Uses = replaceUses(targetTemp, sourceTemp);
-                    W += newT2Uses;
+                    QList<Stmt *> newT2Uses;
+                    replaceUses(targetTemp, sourceTemp, W, &newT2Uses);
                     defUses.removeUse(s, *sourceTemp);
-                    defUses.addUses(*sourceTemp, QList<Stmt*>::fromVector(newT2Uses));
+                    defUses.addUses(*sourceTemp, newT2Uses);
                     defUses.removeDef(*targetTemp);
                     W.clear(s);
                     continue;
@@ -3382,8 +3396,8 @@ void optimizeSSA(IR::Function *function, DefUsesCalculator &defUses, DominatorTr
 
                     QV4::Primitive lc = convertToValue(leftConst);
                     QV4::Primitive rc = convertToValue(rightConst);
-                    double l = RuntimeHelpers::toNumber(&lc);
-                    double r = RuntimeHelpers::toNumber(&rc);
+                    double l = lc.toNumber();
+                    double r = rc.toNumber();
 
                     switch (binop->op) {
                     case OpMul:

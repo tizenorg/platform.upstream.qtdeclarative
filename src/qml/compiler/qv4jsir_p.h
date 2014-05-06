@@ -744,7 +744,7 @@ struct Phi: Stmt {
     virtual void dump(QTextStream &out, Mode mode);
 };
 
-struct Q_QML_EXPORT Module {
+struct Q_QML_PRIVATE_EXPORT Module {
     QQmlJS::MemoryPool pool;
     QVector<Function *> functions;
     Function *rootFunction;
@@ -1010,9 +1010,7 @@ struct Function {
     void LOCAL(const QString &name) { locals.append(newString(name)); }
 
     BasicBlock *addBasicBlock(BasicBlock *block);
-
-    void removeBasicBlock(BasicBlock *block)
-    { block->markAsRemoved(); }
+    void removeBasicBlock(BasicBlock *block);
 
     const QVector<BasicBlock *> &basicBlocks() const
     { return _basicBlocks; }
