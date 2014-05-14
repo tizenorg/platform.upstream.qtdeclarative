@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Qt Declarative examples
+Type=Application
+Exec=/usr/bin/qt5-qtdeclarative-examples.sh
