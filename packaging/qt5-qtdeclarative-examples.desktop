@@ -2,3 +2,4 @@
 Name=Qt Declarative examples
 Type=Application
 Exec=/usr/bin/qt5-qtdeclarative-examples.sh
+Icon=/usr/share/icons/default/small/qt5-qtdeclarative-examples.png
