@@ -32,6 +32,8 @@ License:    LGPL-2.1+ or GPL-3.0
 URL:        http://qt.digia.com
 Source0:    %{name}-%{version}.tar.bz2
 Source1001: %{name}.manifest
+Source1010: %{name}-examples.sh
+Source1011: %{name}-examples.desktop
 BuildRequires:  qt5-qtcore-devel
 BuildRequires:  qt5-qtgui-devel
 BuildRequires:  qt5-qtnetwork-devel
@@ -273,6 +275,11 @@ This package contains QML debugging and development tools
 Summary:    QML and Qt Quick Examples
 Group:      Base/Libraries
 Requires:   %{name} = %{version}-%{release}
+Requires:   qt5-plugin-imageformat-jpeg
+Requires:   qt5-qtdeclarative-import-multimedia
+Requires:   qt5-qtdeclarative-import-particles2
+Requires:   qt5-qtdeclarative-import-qtquick2plugin
+Requires:   qt5-qtdeclarative-qmlscene
 
 %description examples
 This package contains QML and Qt Quick Examples for developers.
@@ -316,7 +323,10 @@ cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
 # Manually copy examples
 install -d "%{buildroot}%{_datadir}/qt5/%{name}/"
 cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
-
+install -d "%{buildroot}%{_bindir}/"
+install %{SOURCE1010} "%{buildroot}%{_bindir}/"
+install -d "%{buildroot}%{_datadir}/applications/"
+install %{SOURCE1011} "%{buildroot}%{_datadir}/applications/"
 
 #### Pre/Post section
 
@@ -514,6 +524,8 @@ cp -rf examples "%{buildroot}%{_datadir}/qt5/%{name}/"
 %files examples
 %defattr(-,root,root,-)
 %manifest %{name}.manifest
+%{_bindir}/%{name}-examples.sh
+%{_datadir}/applications/%{name}-examples.desktop
 %{_datadir}/qt5/%{name}/examples/*
 
 
