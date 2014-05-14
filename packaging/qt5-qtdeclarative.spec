@@ -280,6 +280,10 @@ Requires:   qt5-qtdeclarative-import-multimedia
 Requires:   qt5-qtdeclarative-import-particles2
 Requires:   qt5-qtdeclarative-import-qtquick2plugin
 Requires:   qt5-qtdeclarative-qmlscene
+Requires:   qt5-qtdeclarative-import-models2
+Requires:   qt5-qtdeclarative-import-xmllistmodel
+Requires:   qt5-qtdeclarative-import-folderlistmodel
+Requires:   qt5-qtdeclarative-import-window2
 
 %description examples
 This package contains QML and Qt Quick Examples for developers.
