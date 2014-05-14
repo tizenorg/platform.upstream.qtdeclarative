@@ -328,6 +328,8 @@ install -d "%{buildroot}%{_bindir}/"
 install %{SOURCE1010} "%{buildroot}%{_bindir}/"
 install -d "%{buildroot}%{_datadir}/applications/"
 install %{SOURCE1011} "%{buildroot}%{_datadir}/applications/"
+install -d "%{buildroot}%{_datadir}/icons/default/small/"
+install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/icons/default/small/%{name}-examples.png"
 
 #### Pre/Post section
 
@@ -527,8 +529,8 @@ install %{SOURCE1011} "%{buildroot}%{_datadir}/applications/"
 %manifest %{name}.manifest
 %{_bindir}/%{name}-examples.sh
 %{_datadir}/applications/%{name}-examples.desktop
+%{_datadir}/icons/default/small/%{name}-examples.png
 %{_datadir}/qt5/%{name}/examples/*
-
 
 
 #### No changelog section, separate $pkg.changelog contains the history
