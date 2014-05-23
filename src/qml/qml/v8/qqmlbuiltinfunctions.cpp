@@ -48,7 +48,6 @@
 #include <private/qqmllocale_p.h>
 #include <private/qv8engine_p.h>
 
-#include <private/qv4profilerservice_p.h>
 #include <private/qqmlprofilerservice_p.h>
 #include <private/qqmlglobal_p.h>
 
@@ -1208,18 +1207,16 @@ DEFINE_OBJECT_VTABLE(QQmlBindingFunction);
 /*!
     \qmlmethod Qt::binding(function)
 
-    Returns a JS object representing a binding expression which may be
-    assigned to any property in imperative code to cause a binding
-    assignment.
+    Returns a JavaScript object representing a \l{Property Binding}{property binding}.
 
-    There are two main use-cases for the function: firstly, in imperative
-    JavaScript code to cause a binding assignment:
+    There are two main use-cases for the function: firstly, to apply a
+    property binding imperatively from JavaScript code:
 
     \snippet qml/qtBinding.1.qml 0
 
-    and secondly, when defining initial property values of dynamically
-    constructed objects (via Component.createObject() or
-    Loader.setSource()) as being bound to the result of an expression.
+    and secondly, to apply a property binding when initializing property values
+    of dynamically constructed objects (via \l{Component::createObject()}
+    {Component.createObject()} or \l{Loader::setSource()}{Loader.setSource()}).
 
     For example, assuming the existence of a DynamicText component:
     \snippet qml/DynamicText.qml 0
@@ -1245,8 +1242,8 @@ DEFINE_OBJECT_VTABLE(QQmlBindingFunction);
 
     \snippet qml/qtBinding.4.qml 0
 
-    \note In \l {Qt Quick 1}, all function assignment was treated as
-    binding assignment, so the Qt.binding() function is new in
+    \note In \l {Qt Quick 1}, all function assignments were treated as
+    binding assignments. The Qt.binding() function is new to
     \l {Qt Quick}{Qt Quick 2}.
 
     \since 5.0
