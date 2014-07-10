@@ -26,7 +26,7 @@
 Name:       qt5-qtdeclarative
 Summary:    Qt Declarative library
 Version:    5.3.1
-Release:    0%{?dist}
+Release:    0
 Group:      Base/Libraries
 License:    LGPL-2.1+ or GPL-3.0
 URL:        http://qt.digia.com
