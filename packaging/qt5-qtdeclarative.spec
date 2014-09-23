@@ -299,11 +299,11 @@ ie: qml ./examples/quick/demos/*/*.qml
 cp %{SOURCE1001} .
 
 %build
-export QTDIR=/usr/share/qt5
+export QTDIR=%{_datadir}/qt5
 touch .git
 
 qmake -qt=5
-make %{?_smp_mflags}
+%__make %{?_smp_mflags}
 
 %install
 rm -rf %{buildroot}
@@ -322,8 +322,6 @@ rm -rf %{buildroot}%{_includedir}/qt5/Qt
 
 # Manually copy qmldevtools static library
 cp lib/libQt5QmlDevTools.a %{buildroot}%{_libdir}
-%fdupes %{buildroot}%{_libdir}
-%fdupes %{buildroot}%{_includedir}
 
 # Manually copy examples
 install -d "%{buildroot}%{_datadir}/qt5/%{name}/"
@@ -334,6 +332,10 @@ install -d "%{buildroot}%{_datadir}/applications/"
 install %{SOURCE1011} "%{buildroot}%{_datadir}/applications/"
 install -d "%{buildroot}%{_datadir}/icons/default/small/"
 install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/icons/default/small/%{name}-examples.png"
+
+%fdupes %{buildroot}%{_libdir}
+%fdupes %{buildroot}%{_includedir}
+%fdupes %{buildroot}%{_datadir}
 
 #### Pre/Post section
 
@@ -358,6 +360,10 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %postun qtquickparticles
 /sbin/ldconfig
 
+%post qtquick-widgets
+/sbin/ldconfig
+%postun qtquick-widgets
+/sbin/ldconfig
 
 #### File section
 
