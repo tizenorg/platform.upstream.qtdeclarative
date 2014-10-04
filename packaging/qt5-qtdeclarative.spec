@@ -295,10 +295,10 @@ ie: qml ./examples/quick/demos/*/*.qml
 #### Build section
 
 %prep
-%setup -q -n %{name}-%{version}/qtdeclarative
-cp %{SOURCE1001} .
+%setup -q -n %{name}-%{version}
 
 %build
+cp %{SOURCE1001} .
 export QTDIR=%{_datadir}/qt5
 touch .git
 
