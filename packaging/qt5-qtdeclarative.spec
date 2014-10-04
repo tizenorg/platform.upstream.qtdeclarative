@@ -23,9 +23,11 @@
 # This file is based on qtdeclarative.spec from Mer project
 # http://merproject.org
 
+%bcond_with wayland
+
 Name:       qt5-qtdeclarative
 Summary:    Qt Declarative library
-Version:    5.3.1
+Version:    5.3.99+beta1
 Release:    0
 Group:      Base/Libraries
 License:    LGPL-2.1+ or GPL-3.0
@@ -174,6 +176,14 @@ Requires:   %{name} = %{version}-%{release}
 %description import-settings
 This package provides the QtQml settings plugin
 
+%package import-statemachine
+Summary:    Qt Qml bindings to Qt State Machine Framework
+Group:      Base/Libraries
+Requires:   %{name} = %{version}-%{release}
+
+%description import-statemachine
+This package provides the QtQml bindings to Qt State Machine Framewrk
+
 %package import-localstorageplugin
 Summary:    Qt LocalStorage plugin
 Requires:   %{name} = %{version}-%{release}
@@ -188,15 +198,6 @@ Requires:   %{name} = %{version}-%{release}
 
 %description plugin-qmlinspector
 This package provides the QML inspector plugin
-
-%package plugin-accessible
-Summary:    Qt Declarative accessible plugin
-Group:      Base/Libraries
-Requires:   %{name} = %{version}-%{release}
-
-%description plugin-accessible
-This package provides the QML accessible plugin
-
 
 %package import-qtquick2plugin
 Summary:    Qt Declarative QtQuick 2 support plugin
@@ -438,6 +439,8 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %{_qt5_bindir}/qmlbundle
 %{_qt5_bindir}/qmlimportscanner
 %{_qt5_bindir}/qmljs
+%{_qt5_bindir}/qmleasing
+%{_qt5_bindir}/qmllint
 
 %files import-folderlistmodel
 %defattr(-,root,root,-)
@@ -453,11 +456,6 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %defattr(-,root,root,-)
 %manifest %{name}.manifest
 %{_libdir}/qt5/plugins/qmltooling/*
-
-%files plugin-accessible
-%defattr(-,root,root,-)
-%manifest %{name}.manifest
-%{_libdir}/qt5/plugins/accessible/libqtaccessiblequick.so
 
 %files import-qttest
 %defattr(-,root,root,-)
@@ -533,6 +531,11 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 
 %files import-settings
 %{_libdir}/qt5/qml/Qt/labs/settings
+
+%files import-statemachine
+%{_libdir}/qt5/qml/QtQml/StateMachine/libqtqmlstatemachine.so
+%{_libdir}/qt5/qml/QtQml/StateMachine/plugins.qmltypes
+%{_libdir}/qt5/qml/QtQml/StateMachine/qmldir
 
 %files examples
 %defattr(-,root,root,-)
