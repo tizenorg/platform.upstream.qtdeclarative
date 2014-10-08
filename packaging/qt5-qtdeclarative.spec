@@ -63,6 +63,7 @@ Group:      Base/Libraries
 Requires:   %{name} = %{version}-%{release}
 Requires:   qt5-qtsql-devel
 Requires:   qt5-qtnetwork-devel
+Requires:   qt5-qtdeclarative-plugin-qmlinspector
 
 %description devel
 Qt is a cross-platform application and UI framework. Using Qt, you can
