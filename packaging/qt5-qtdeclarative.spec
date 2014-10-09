@@ -23,6 +23,14 @@
 # This file is based on qtdeclarative.spec from Mer project
 # http://merproject.org
 
+#don't use JIT on tizen mobile emulator - it crashes
+%if "%{tizen}" == "2.1" || "%{tizen}" == "2.3"
+%ifnarch armv7l armv7el
+%define _without_jit 1
+%endif
+%endif
+
+%bcond_without jit
 %bcond_with wayland
 
 Name:       qt5-qtdeclarative
@@ -439,7 +447,9 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %{_qt5_bindir}/qmlmin
 %{_qt5_bindir}/qmlbundle
 %{_qt5_bindir}/qmlimportscanner
+%if %{with jit}
 %{_qt5_bindir}/qmljs
+%endif
 %{_qt5_bindir}/qmleasing
 %{_qt5_bindir}/qmllint
 
