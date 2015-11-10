@@ -27,7 +27,7 @@
 
 Name:       qt5-qtdeclarative
 Summary:    Qt Declarative library
-Version:    5.4.1
+Version:    5.5.90+alpha1
 Release:    0
 Group:      Base/Libraries
 License:    LGPL-2.1+ or GPL-3.0
@@ -385,6 +385,7 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %{_libdir}/libQt5Qml.prl
 %{_libdir}/pkgconfig/Qt5Qml.pc
 %{_includedir}/qt5/QtQml
+%{_includedir}/qt5/QtQmlDevTools
 %{_datadir}/qt5/mkspecs/modules/qt_lib_qml.pri
 %{_datadir}/qt5/mkspecs/modules/qt_lib_qml_private.pri
 %{_libdir}/cmake
@@ -437,7 +438,6 @@ install ./tests/benchmarks/qml/painting/data/64x64.png "%{buildroot}%{_datadir}/
 %{_qt5_bindir}/qmlprofiler
 %{_qt5_bindir}/qmltestrunner
 %{_qt5_bindir}/qmlmin
-%{_qt5_bindir}/qmlbundle
 %{_qt5_bindir}/qmlimportscanner
 %{_qt5_bindir}/qmljs
 %{_qt5_bindir}/qmleasing
